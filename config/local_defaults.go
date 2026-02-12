@@ -20,7 +20,7 @@
 package config
 
 var defaultLocal = Local{
-	Version:                                    38,
+	Version:                                    39,
 	AccountUpdatesStatsInterval:                5000000000,
 	AccountsRebuildSynchronousMode:             1,
 	AgreementIncomingBundlesQueueLength:        15,
@@ -93,6 +93,7 @@ var defaultLocal = Local{
 	EnableVerbosedTransactionSyncLogging:       false,
 	EnableVoteCompression:                      true,
 	EndpointAddress:                            "127.0.0.1:0",
+	ExternalWeightOraclePort:                   0,
 	FallbackDNSResolverAddress:                 "",
 	ForceFetchTransactions:                     false,
 	ForceRelayMessages:                         false,
