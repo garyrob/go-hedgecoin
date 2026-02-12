@@ -115,6 +115,8 @@ func migrate(cfg Local) (newCfg Local, migrations []MigrationResult, err error) 
 						migrationResults[field.Name] = MigrationResult{FieldName: field.Name, OldVersion: originalVersion, NewVersion: nextVersion, OldValue: oldValue, NewValue: intVal}
 					}
 				}
+			case reflect.Uint16:
+				fallthrough
 			case reflect.Uint32:
 				fallthrough
 			case reflect.Uint:
@@ -225,6 +227,12 @@ func GetVersionedDefaultLocalConfig(version uint32) (local Local) {
 			}
 			reflect.ValueOf(&local).Elem().FieldByName(field.Name).SetInt(intVal)
 
+		case reflect.Uint16:
+			uintVal, err := strconv.ParseUint(versionDefaultValue, 10, 16)
+			if err != nil {
+				panic(err)
+			}
+			reflect.ValueOf(&local).Elem().FieldByName(field.Name).SetUint(uintVal)
 		case reflect.Uint32:
 			uintVal, err := strconv.ParseUint(versionDefaultValue, 10, 32)
 			if err != nil {
