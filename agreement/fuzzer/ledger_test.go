@@ -31,6 +31,7 @@ import (
 	basics_testing "github.com/algorand/go-algorand/data/basics/testing"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/committee"
+	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/protocol"
 )
 
@@ -349,6 +350,49 @@ func (l *testLedger) ConsensusParams(r basics.Round) (config.ConsensusParams, er
 
 func (l *testLedger) ConsensusVersion(r basics.Round) (protocol.ConsensusVersion, error) {
 	return protocol.ConsensusCurrentVersion, nil
+}
+
+// ExternalWeight implements ledgercore.ExternalWeighter for testing.
+// Uses the account's stake (MicroAlgos) as the weight for backward compatibility.
+func (l *testLedger) ExternalWeight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if balanceRound >= l.nextRound {
+		err := fmt.Errorf("ExternalWeight called on future round: %v >= %v! (this is probably a bug)", balanceRound, l.nextRound)
+		panic(err)
+	}
+
+	acct, ok := l.state[addr]
+	if !ok {
+		// Return "internal" error for not-found accounts so vote verification
+		// fails gracefully (returns error) rather than panicking.
+		return 0, &ledgercore.DaemonError{Code: "internal", Msg: fmt.Sprintf("account %v not found in test ledger", addr)}
+	}
+	// Use stake as weight for test compatibility
+	return acct.MicroAlgos.Raw, nil
+}
+
+// TotalExternalWeight implements ledgercore.ExternalWeighter for testing.
+// Returns the sum of Online account stakes as the total weight.
+// This matches the behavior of Circulation() which only counts voting stake.
+func (l *testLedger) TotalExternalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if balanceRound >= l.nextRound {
+		err := fmt.Errorf("TotalExternalWeight called on future round: %v >= %v! (this is probably a bug)", balanceRound, l.nextRound)
+		panic(err)
+	}
+
+	var total uint64
+	for _, rec := range l.state {
+		// Only count Online accounts, matching Circulation behavior
+		if rec.Status == basics.Online {
+			total += rec.MicroAlgos.Raw
+		}
+	}
+	return total, nil
 }
 
 func (l *testLedger) TryEnsuringDigest() bool {
