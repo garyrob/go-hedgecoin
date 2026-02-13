@@ -99,12 +99,30 @@ func (cred UnauthenticatedCredential) Verify(proto config.ConsensusParams, m Mem
 	userMoney := m.Record.VotingStake()
 	expectedSelection := float64(m.Selector.CommitteeSize(proto))
 
-	if m.TotalMoney.Raw < userMoney.Raw {
-		logging.Base().Panicf("UnauthenticatedCredential.Verify: total money = %v, but user money = %v", m.TotalMoney, userMoney)
-	} else if m.TotalMoney.IsZero() || expectedSelection == 0 || expectedSelection > float64(m.TotalMoney.Raw) {
-		logging.Base().Panicf("UnauthenticatedCredential.Verify: m.TotalMoney %v, expectedSelection %v", m.TotalMoney.Raw, expectedSelection)
-	} else if !userMoney.IsZero() {
-		weight = sortition.Select(userMoney.Raw, m.TotalMoney.Raw, expectedSelection, sortition.Digest(h))
+	// Stake is no longer used for gating or selection; suppress unused-variable error
+	_ = userMoney
+
+	// Weight determines both eligibility and selection probability.
+	// ExternalWeight == 0 means either:
+	//   (a) The account had invalid vote keys (membership() left weights at zero), or
+	//   (b) An invariant violation (should have been caught in membership()).
+	// In case (a), vote.verify rejects the message immediately afterward.
+	if m.ExternalWeight > 0 {
+		// Population alignment check: TotalExternalWeight must be >= ExternalWeight
+		// Note: This also catches TotalExternalWeight == 0 when ExternalWeight > 0
+		if m.TotalExternalWeight < m.ExternalWeight {
+			logging.Base().Panicf("UnauthenticatedCredential.Verify: TotalExternalWeight %d < ExternalWeight %d (population alignment violated)",
+				m.TotalExternalWeight, m.ExternalWeight)
+		}
+
+		// Validate sortition parameters (expectedSelection bounds)
+		if expectedSelection == 0 || expectedSelection > float64(m.TotalExternalWeight) {
+			logging.Base().Panicf("UnauthenticatedCredential.Verify: TotalExternalWeight %d, expectedSelection %v",
+				m.TotalExternalWeight, expectedSelection)
+		}
+
+		// Weight passed directly to sortition.Select
+		weight = sortition.Select(m.ExternalWeight, m.TotalExternalWeight, expectedSelection, sortition.Digest(h))
 	}
 
 	if weight == 0 {
