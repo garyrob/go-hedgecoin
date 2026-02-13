@@ -47,6 +47,9 @@ import (
 	"github.com/algorand/go-algorand/util/metrics"
 )
 
+// Compile-time interface check: Ledger must implement ExternalWeighter
+var _ ledgercore.ExternalWeighter = (*Ledger)(nil)
+
 // Ledger is a database storing the contents of the ledger.
 type Ledger struct {
 	// Database connections to the DBs storing blocks and tracker state.
@@ -101,6 +104,12 @@ type Ledger struct {
 	dirsAndPrefix DirsAndPrefix
 
 	tracer logic.EvalTracer
+
+	// weightOracle is the external weight oracle client.
+	// When nil, ExternalWeight/TotalExternalWeight use stake as a fallback (for testing).
+	// Task 7 will set this via SetWeightOracle() during node startup.
+	// Production nodes MUST have this set; startup validation will enforce this.
+	weightOracle ledgercore.WeightOracle
 }
 
 // DirsAndPrefix is a struct that holds the genesis directories and the database file prefix, so ledger can construct full paths to database files
@@ -723,6 +732,66 @@ func (l *Ledger) OnlineCirculation(rnd basics.Round, voteRnd basics.Round) (basi
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
 	return l.acctsOnline.onlineCirculation(rnd, voteRnd)
+}
+
+// SetWeightOracle sets the external weight oracle client.
+// This must be called during node startup before any consensus operations.
+// Task 7 will implement the startup sequence that calls this.
+func (l *Ledger) SetWeightOracle(oracle ledgercore.WeightOracle) {
+	l.weightOracle = oracle
+}
+
+// WeightOracle returns the configured weight oracle, or nil if not set.
+func (l *Ledger) WeightOracle() ledgercore.WeightOracle {
+	return l.weightOracle
+}
+
+// ExternalWeight returns the external consensus weight for the given account.
+// If a weight oracle is configured, it queries the oracle.
+// Otherwise, falls back to using stake as weight (for testing compatibility).
+//
+// IMPORTANT: Production nodes MUST have the weight oracle configured via SetWeightOracle().
+// The fallback to stake is only for existing tests that don't set up an oracle.
+// Task 7 startup validation will ensure the oracle is configured before consensus starts.
+func (l *Ledger) ExternalWeight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	if l.weightOracle != nil {
+		return l.weightOracle.Weight(balanceRound, addr, selectionID)
+	}
+	// Fallback for testing: use stake as weight
+	l.trackerMu.RLock()
+	defer l.trackerMu.RUnlock()
+	acctData, _, _, err := l.accts.lookupLatest(addr)
+	if err != nil {
+		// Return "internal" error so vote verification fails gracefully
+		return 0, &ledgercore.DaemonError{Code: "internal", Msg: fmt.Sprintf("account lookup failed: %v", err)}
+	}
+	if acctData.MicroAlgos.Raw == 0 {
+		// Account doesn't exist or has zero stake - return "internal" error
+		// so vote verification fails gracefully rather than panicking.
+		return 0, &ledgercore.DaemonError{Code: "internal", Msg: fmt.Sprintf("account %v has zero stake in fallback mode", addr)}
+	}
+	return acctData.MicroAlgos.Raw, nil
+}
+
+// TotalExternalWeight returns the total external consensus weight.
+// If a weight oracle is configured, it queries the oracle.
+// Otherwise, falls back to using total online stake as weight (for testing compatibility).
+//
+// IMPORTANT: Production nodes MUST have the weight oracle configured via SetWeightOracle().
+// The fallback to stake is only for existing tests that don't set up an oracle.
+// Task 7 startup validation will ensure the oracle is configured before consensus starts.
+func (l *Ledger) TotalExternalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	if l.weightOracle != nil {
+		return l.weightOracle.TotalWeight(balanceRound, voteRound)
+	}
+	// Fallback for testing: use total online circulation as weight
+	l.trackerMu.RLock()
+	defer l.trackerMu.RUnlock()
+	circulation, err := l.acctsOnline.onlineCirculation(balanceRound, voteRound)
+	if err != nil {
+		return 0, err
+	}
+	return circulation.Raw, nil
 }
 
 // CheckDup return whether a transaction is a duplicate one.
