@@ -56,6 +56,11 @@ func (cs *roundCowState) onlineStake() (basics.MicroAlgos, error) {
 	return cs.lookupParent.onlineStake()
 }
 
+// balanceRound is needed to implement roundCowParent
+func (cs *roundCowState) balanceRound() (basics.Round, error) {
+	return cs.lookupParent.balanceRound()
+}
+
 func (cs *roundCowState) Authorizer(addr basics.Address) (basics.Address, error) {
 	record, err := cs.Get(addr, false) // pending rewards unneeded
 	if err != nil {
