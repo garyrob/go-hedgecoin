@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"math/rand"
 	"testing"
 
@@ -685,6 +686,22 @@ type evalTestLedger struct {
 	latestTotals        ledgercore.AccountTotals
 	tracer              logic.EvalTracer
 	boxes               map[string][]byte
+
+	// Weight-related fields for ExternalWeighter implementation
+	// accountWeights maps balance round -> address -> selection ID -> weight
+	// If nil, weights default to account's MicroAlgos balance
+	accountWeights map[basics.Round]map[basics.Address]map[crypto.VRFVerifier]uint64
+	// totalWeights maps balance round -> vote round -> total weight
+	// If nil, totalWeight defaults to sum of online account balances
+	totalWeights map[basics.Round]map[basics.Round]uint64
+
+	// Error injection for ExternalWeighter testing
+	// If set, TotalExternalWeight returns this error
+	totalWeightError error
+	// If set, ExternalWeight returns this error for any address
+	externalWeightError error
+	// If set, ExternalWeight returns this error for specific addresses
+	externalWeightErrorByAddr map[basics.Address]error
 }
 
 // newTestLedger creates a in memory Ledger that is as realistic as
@@ -810,6 +827,68 @@ func (ledger *evalTestLedger) OnlineCirculation(rnd, voteRound basics.Round) (ba
 	}
 	return circulation, nil
 }
+
+// ExternalWeight implements ledgercore.ExternalWeighter for testing.
+// If accountWeights is set, it returns the configured weight.
+// Otherwise, it returns the account's MicroAlgos balance as weight.
+func (ledger *evalTestLedger) ExternalWeight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	// Check for error injection
+	if ledger.externalWeightError != nil {
+		return 0, ledger.externalWeightError
+	}
+	if ledger.externalWeightErrorByAddr != nil {
+		if err, ok := ledger.externalWeightErrorByAddr[addr]; ok {
+			return 0, err
+		}
+	}
+
+	if ledger.accountWeights != nil {
+		if roundWeights, ok := ledger.accountWeights[balanceRound]; ok {
+			if addrWeights, ok := roundWeights[addr]; ok {
+				if weight, ok := addrWeights[selectionID]; ok {
+					return weight, nil
+				}
+			}
+		}
+	}
+	// Default: return account's MicroAlgos balance as weight
+	balances, ok := ledger.roundBalances[balanceRound]
+	if !ok {
+		return 0, fmt.Errorf("no balances for round %d", balanceRound)
+	}
+	ad, ok := balances[addr]
+	if !ok {
+		return 0, fmt.Errorf("no such account %s at round %d", addr.String(), balanceRound)
+	}
+	return ad.MicroAlgos.Raw, nil
+}
+
+// TotalExternalWeight implements ledgercore.ExternalWeighter for testing.
+// If totalWeights is set, it returns the configured total weight.
+// Otherwise, it returns the sum of online account balances.
+func (ledger *evalTestLedger) TotalExternalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	// Check for error injection
+	if ledger.totalWeightError != nil {
+		return 0, ledger.totalWeightError
+	}
+
+	if ledger.totalWeights != nil {
+		if roundWeights, ok := ledger.totalWeights[balanceRound]; ok {
+			if weight, ok := roundWeights[voteRound]; ok {
+				return weight, nil
+			}
+		}
+	}
+	// Default: return sum of online account balances
+	circulation, err := ledger.OnlineCirculation(balanceRound, voteRound)
+	if err != nil {
+		return 0, err
+	}
+	return circulation.Raw, nil
+}
+
+// Compile-time check that evalTestLedger implements ExternalWeighter
+var _ ledgercore.ExternalWeighter = (*evalTestLedger)(nil)
 
 func (ledger *evalTestLedger) LookupApplication(rnd basics.Round, addr basics.Address, aidx basics.AppIndex) (ledgercore.AppResource, error) {
 	res := ledgercore.AppResource{}
@@ -1625,4 +1704,533 @@ func TestIsAbsent(t *testing.T) {
 	// not absent if never seen
 	a.False(absent(1000, 10, 0, 2001))
 	a.True(absent(1000, 10, 1, 2002))
+}
+
+func TestIsAbsentByWeight(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+	a := assert.New(t)
+
+	var absent = func(totalWeight uint64, acctWeight uint64, last uint64, current uint64) bool {
+		return isAbsentByWeight(totalWeight, acctWeight, basics.Round(last), basics.Round(current))
+	}
+
+	// Basic test: 1% of weight, absent for 1000 rounds
+	// With totalWeight=1000, acctWeight=10: allowableLag = 20 * 1000 / 10 = 2000
+	a.False(absent(1000, 10, 5000, 6000)) // 1% of weight, absent for 1000 rounds
+	a.False(absent(1000, 10, 5000, 7000)) // 1% of weight, absent for 2000 rounds (exactly at threshold)
+	a.True(absent(1000, 10, 5000, 7001))  // 2001 rounds - exceeds threshold
+
+	// More account weight means lower allowable lag
+	// totalWeight=1000, acctWeight=11: allowableLag = 20 * 1000 / 11 ≈ 1818
+	a.True(absent(1000, 11, 5000, 7000)) // more acct weight drives allowable lag down, makes it absent
+
+	// Less account weight means higher allowable lag
+	// totalWeight=1000, acctWeight=9: allowableLag = 20 * 1000 / 9 ≈ 2222
+	a.False(absent(1000, 9, 5000, 7001)) // less acct weight
+
+	// More total weight increases allowable lag
+	// totalWeight=1001, acctWeight=10: allowableLag = 20 * 1001 / 10 = 2002
+	a.False(absent(1001, 10, 5000, 7001)) // more total weight
+
+	// Not absent if never seen (lastSeen == 0)
+	a.False(absent(1000, 10, 0, 2001))
+	a.True(absent(1000, 10, 1, 2002))
+
+	// Defensive guard: acctWeight == 0 returns false
+	a.False(absent(1000, 0, 5000, 7001))
+
+	// Test known intervals from spec:
+	// totalWeight=1000, acctWeight=100: allowableLag = 20 * 1000 / 100 = 200
+	a.False(absent(1000, 100, 5000, 5199)) // not yet at threshold
+	a.False(absent(1000, 100, 5000, 5200)) // exactly at threshold (5000 + 200 = 5200, 5200 < 5200 is false)
+	a.True(absent(1000, 100, 5000, 5201))  // exceeds threshold
+
+	// Test overflow handling: totalWeight = math.MaxUint64, acctWeight = 1
+	// This causes overflow in Muldiv, should return false (not absent)
+	a.False(absent(math.MaxUint64, 1, 5000, math.MaxUint64))
+
+	// Test large but non-overflowing values
+	// totalWeight = 1000000000, acctWeight = 1000: allowableLag = 20 * 1000000000 / 1000 = 20000000
+	a.False(absent(1000000000, 1000, 1000000, 21000000)) // not yet at threshold
+	a.True(absent(1000000000, 1000, 1000000, 21000001))  // exceeds threshold
+}
+
+// TestWeightBasedAbsenteeismCompileTimeCheck verifies that evalTestLedger
+// implements ExternalWeighter (via the compile-time check above), and that the
+// isAbsentByWeight function uses the correct constant from ledgercore.
+func TestWeightBasedAbsenteeismCompileTimeCheck(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	// Verify that ledgercore.AbsenteeismMultiplier equals absentFactor
+	// This is also enforced by a compile-time check in eval.go, but we
+	// verify it here for documentation purposes.
+	require.Equal(t, uint64(absentFactor), ledgercore.AbsenteeismMultiplier,
+		"absentFactor must equal ledgercore.AbsenteeismMultiplier")
+
+	// Verify the ExternalWeighter implementation on evalTestLedger returns
+	// expected values for the default case (using MicroAlgos as weight)
+	l := &evalTestLedger{
+		roundBalances: map[basics.Round]map[basics.Address]basics.AccountData{
+			0: {
+				basics.Address{1}: {MicroAlgos: basics.MicroAlgos{Raw: 1000}},
+			},
+		},
+	}
+
+	// Default: weight equals MicroAlgos
+	weight, err := l.ExternalWeight(0, basics.Address{1}, crypto.VRFVerifier{})
+	require.NoError(t, err)
+	require.Equal(t, uint64(1000), weight)
+
+	// Default: total weight equals sum of online balances
+	l.roundBalances[0][basics.Address{1}] = basics.AccountData{
+		Status:     basics.Online,
+		MicroAlgos: basics.MicroAlgos{Raw: 500},
+	}
+	l.roundBalances[0][basics.Address{2}] = basics.AccountData{
+		Status:     basics.Online,
+		MicroAlgos: basics.MicroAlgos{Raw: 300},
+	}
+	l.roundBalances[0][basics.Address{3}] = basics.AccountData{
+		Status:     basics.Offline, // should not be counted
+		MicroAlgos: basics.MicroAlgos{Raw: 200},
+	}
+	totalWeight, err := l.TotalExternalWeight(0, 1)
+	require.NoError(t, err)
+	require.Equal(t, uint64(800), totalWeight) // 500 + 300 = 800 (offline not counted)
+
+	// Custom weights override defaults
+	l.accountWeights = map[basics.Round]map[basics.Address]map[crypto.VRFVerifier]uint64{
+		0: {
+			basics.Address{1}: {crypto.VRFVerifier{}: 9999},
+		},
+	}
+	weight, err = l.ExternalWeight(0, basics.Address{1}, crypto.VRFVerifier{})
+	require.NoError(t, err)
+	require.Equal(t, uint64(9999), weight)
+
+	l.totalWeights = map[basics.Round]map[basics.Round]uint64{
+		0: {1: 12345},
+	}
+	totalWeight, err = l.TotalExternalWeight(0, 1)
+	require.NoError(t, err)
+	require.Equal(t, uint64(12345), totalWeight)
+}
+
+// TestWeightAbsenteeismCrossCheckPanic verifies that generateKnockOfflineAccountsList
+// panics when onlineStake > 0 but totalWeight == 0, and validateAbsentOnlineAccounts
+// returns an error for the same condition.
+func TestWeightAbsenteeismCrossCheckPanic(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.GenesisWithProto(3, protocol.ConsensusFuture)
+
+	// Set up one online account with non-zero balance (so onlineStake > 0)
+	for _, addr := range addrs {
+		tmp := genesisInitState.Accounts[addr]
+		tmp.Status = basics.Online
+		tmp.MicroAlgos = basics.MicroAlgos{Raw: 1_000_000_000}
+		crypto.RandBytes(tmp.SelectionID[:])
+		crypto.RandBytes(tmp.VoteID[:])
+		tmp.IncentiveEligible = true
+		tmp.VoteFirstValid = 1
+		tmp.VoteLastValid = 1000
+		tmp.LastHeartbeat = 1
+		genesisInitState.Accounts[addr] = tmp
+	}
+
+	l := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+
+	// Configure totalWeight to return 0 for all rounds
+	l.totalWeights = make(map[basics.Round]map[basics.Round]uint64)
+	l.totalWeights[0] = map[basics.Round]uint64{1: 0} // totalWeight = 0
+
+	newBlock := bookkeeping.MakeBlock(l.blocks[0].BlockHeader)
+	blkEval, err := l.StartEvaluator(newBlock.BlockHeader, 0, 0, nil)
+	require.NoError(t, err)
+
+	// Generation path should panic when onlineStake > 0 but totalWeight == 0
+	require.Panics(t, func() {
+		_, _ = blkEval.GenerateBlock(nil)
+	}, "generateKnockOfflineAccountsList should panic when onlineStake > 0 but totalWeight == 0")
+}
+
+// TestWeightAbsenteeismZeroWeightAccount verifies that generateKnockOfflineAccountsList
+// panics when an online account has zero external weight, and validateAbsentOnlineAccounts
+// returns an error for the same condition.
+func TestWeightAbsenteeismZeroWeightAccount(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.GenesisWithProto(3, protocol.ConsensusFuture)
+
+	// Set up online accounts
+	for i, addr := range addrs {
+		tmp := genesisInitState.Accounts[addr]
+		tmp.Status = basics.Online
+		tmp.MicroAlgos = basics.MicroAlgos{Raw: 1_000_000_000}
+		crypto.RandBytes(tmp.SelectionID[:])
+		crypto.RandBytes(tmp.VoteID[:])
+		tmp.IncentiveEligible = true
+		tmp.VoteFirstValid = 1
+		tmp.VoteLastValid = 1000
+		if i == 0 {
+			tmp.LastHeartbeat = 1 // Make this account eligible for absence check
+		} else {
+			tmp.LastHeartbeat = 100 // Recent activity
+		}
+		genesisInitState.Accounts[addr] = tmp
+	}
+
+	l := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+
+	// Configure accountWeights: return 0 for addrs[0]
+	selectionID0 := genesisInitState.Accounts[addrs[0]].SelectionID
+	l.accountWeights = map[basics.Round]map[basics.Address]map[crypto.VRFVerifier]uint64{
+		0: {
+			addrs[0]: {selectionID0: 0}, // Zero weight for this account
+		},
+	}
+	// Set non-zero total weight
+	l.totalWeights = map[basics.Round]map[basics.Round]uint64{
+		0: {1: 1000},
+	}
+
+	newBlock := bookkeeping.MakeBlock(l.blocks[0].BlockHeader)
+	blkEval, err := l.StartEvaluator(newBlock.BlockHeader, 0, 0, nil)
+	require.NoError(t, err)
+
+	// Generation path should panic when account has zero weight
+	require.Panics(t, func() {
+		_, _ = blkEval.GenerateBlock(nil)
+	}, "generateKnockOfflineAccountsList should panic when account has zero external weight")
+}
+
+// TestWeightAbsenteeismDaemonErrorInternal verifies that DaemonError with Code "internal"
+// is handled gracefully: generation returns empty (no knockoffs), not panic.
+func TestWeightAbsenteeismDaemonErrorInternal(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.GenesisWithProto(3, protocol.ConsensusFuture)
+
+	for _, addr := range addrs {
+		tmp := genesisInitState.Accounts[addr]
+		tmp.Status = basics.Online
+		tmp.MicroAlgos = basics.MicroAlgos{Raw: 1_000_000_000}
+		crypto.RandBytes(tmp.SelectionID[:])
+		crypto.RandBytes(tmp.VoteID[:])
+		tmp.IncentiveEligible = true
+		tmp.VoteFirstValid = 1
+		tmp.VoteLastValid = 1000
+		tmp.LastHeartbeat = 1
+		genesisInitState.Accounts[addr] = tmp
+	}
+
+	l := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+
+	// Inject internal daemon error for TotalExternalWeight
+	l.totalWeightError = &ledgercore.DaemonError{Code: "internal", Msg: "test internal error"}
+
+	newBlock := bookkeeping.MakeBlock(l.blocks[0].BlockHeader)
+	// Use StartEvaluator directly with Generate=true, Validate=false
+	blkEval, err := StartEvaluator(l, newBlock.BlockHeader, EvaluatorOptions{
+		Generate: true,
+		Validate: false, // Don't validate - we only want to test generation
+	})
+	require.NoError(t, err)
+
+	// Generation should NOT panic, should return block with no absent accounts
+	unfinishedBlock, err := blkEval.GenerateBlock(nil)
+	require.NoError(t, err)
+	require.Empty(t, unfinishedBlock.UnfinishedBlock().ParticipationUpdates.AbsentParticipationAccounts,
+		"Internal daemon error should result in empty absent list, not panic")
+}
+
+// TestWeightAbsenteeismDaemonErrorNotFound verifies that DaemonError with Code "not_found"
+// causes a panic in the generation path (invariant violation).
+func TestWeightAbsenteeismDaemonErrorNotFound(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.GenesisWithProto(3, protocol.ConsensusFuture)
+
+	for _, addr := range addrs {
+		tmp := genesisInitState.Accounts[addr]
+		tmp.Status = basics.Online
+		tmp.MicroAlgos = basics.MicroAlgos{Raw: 1_000_000_000}
+		crypto.RandBytes(tmp.SelectionID[:])
+		crypto.RandBytes(tmp.VoteID[:])
+		tmp.IncentiveEligible = true
+		tmp.VoteFirstValid = 1
+		tmp.VoteLastValid = 1000
+		tmp.LastHeartbeat = 1
+		genesisInitState.Accounts[addr] = tmp
+	}
+
+	l := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+
+	// Inject not_found daemon error for TotalExternalWeight
+	l.totalWeightError = &ledgercore.DaemonError{Code: "not_found", Msg: "test not_found error"}
+
+	newBlock := bookkeeping.MakeBlock(l.blocks[0].BlockHeader)
+	blkEval, err := l.StartEvaluator(newBlock.BlockHeader, 0, 0, nil)
+	require.NoError(t, err)
+
+	// Generation should panic for non-internal daemon errors
+	require.Panics(t, func() {
+		_, _ = blkEval.GenerateBlock(nil)
+	}, "generateKnockOfflineAccountsList should panic on DaemonError with Code != 'internal'")
+}
+
+// TestWeightAbsenteeismEmptyCandidateList verifies that when there are no
+// candidates for absenteeism checking, the code handles it gracefully.
+func TestWeightAbsenteeismEmptyCandidateList(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.GenesisWithProto(3, protocol.ConsensusFuture)
+
+	// Set all accounts to offline so there are no candidates
+	for _, addr := range addrs {
+		tmp := genesisInitState.Accounts[addr]
+		tmp.Status = basics.Offline
+		tmp.MicroAlgos = basics.MicroAlgos{Raw: 1_000_000_000}
+		genesisInitState.Accounts[addr] = tmp
+	}
+
+	l := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+
+	newBlock := bookkeeping.MakeBlock(l.blocks[0].BlockHeader)
+	blkEval, err := l.StartEvaluator(newBlock.BlockHeader, 0, 0, nil)
+	require.NoError(t, err)
+
+	// Should not panic with empty candidate list
+	unfinishedBlock, err := blkEval.GenerateBlock(nil)
+	require.NoError(t, err)
+	require.Empty(t, unfinishedBlock.UnfinishedBlock().ParticipationUpdates.AbsentParticipationAccounts)
+	require.Empty(t, unfinishedBlock.UnfinishedBlock().ParticipationUpdates.ExpiredParticipationAccounts)
+}
+
+// TestWeightAbsenteeismValidationCrossCheckError verifies that validateAbsentOnlineAccounts
+// returns an error (not panic) when onlineStake > 0 but totalWeight == 0 during validation.
+func TestWeightAbsenteeismValidationCrossCheckError(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.GenesisWithProto(3, protocol.ConsensusFuture)
+
+	// Set up one online account with non-zero balance (so onlineStake > 0)
+	for _, addr := range addrs {
+		tmp := genesisInitState.Accounts[addr]
+		tmp.Status = basics.Online
+		tmp.MicroAlgos = basics.MicroAlgos{Raw: 1_000_000_000}
+		crypto.RandBytes(tmp.SelectionID[:])
+		crypto.RandBytes(tmp.VoteID[:])
+		tmp.IncentiveEligible = true
+		tmp.VoteFirstValid = 1
+		tmp.VoteLastValid = 1000
+		tmp.LastHeartbeat = 1
+		genesisInitState.Accounts[addr] = tmp
+	}
+
+	l := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+
+	// First generate a valid block (with normal weights)
+	blkEval := l.nextBlock(t)
+	unfinishedBlock, err := blkEval.GenerateBlock(nil)
+	require.NoError(t, err)
+
+	// Get the block and add it to ledger to set up proper state
+	seed := committee.Seed{}
+	crypto.RandBytes(seed[:])
+	generatedBlock := unfinishedBlock.UnfinishedBlock().WithProposer(seed, testPoolAddr, true)
+
+	// Now modify the ledger to return 0 total weight for validation
+	// This simulates the error condition during block validation (not generation)
+	l.totalWeights = make(map[basics.Round]map[basics.Round]uint64)
+	l.totalWeights[0] = map[basics.Round]uint64{1: 0} // totalWeight = 0
+
+	// Add an absent account to the block to trigger the absent validation path
+	generatedBlock.AbsentParticipationAccounts = append(generatedBlock.AbsentParticipationAccounts, addrs[0])
+
+	// Validation path should return an error (not panic) when totalWeight is 0 but onlineStake > 0
+	_, err = Eval(context.Background(), l, generatedBlock, true, verify.GetMockedCache(true), nil, l.tracer)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "totalOnlineStake non-zero")
+	require.ErrorContains(t, err, "totalWeight is zero")
+}
+
+// TestWeightAbsenteeismValidationZeroWeightError verifies that validateAbsentOnlineAccounts
+// returns an error (not panic) when an account in the absent list has zero external weight.
+func TestWeightAbsenteeismValidationZeroWeightError(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.GenesisWithProto(3, protocol.ConsensusFuture)
+
+	// Set up online accounts
+	for i, addr := range addrs {
+		tmp := genesisInitState.Accounts[addr]
+		tmp.Status = basics.Online
+		tmp.MicroAlgos = basics.MicroAlgos{Raw: 1_000_000_000}
+		crypto.RandBytes(tmp.SelectionID[:])
+		crypto.RandBytes(tmp.VoteID[:])
+		tmp.IncentiveEligible = true
+		tmp.VoteFirstValid = 1
+		tmp.VoteLastValid = 1000
+		if i == 0 {
+			tmp.LastHeartbeat = 1 // Make this account eligible for absence check
+		} else {
+			tmp.LastHeartbeat = 100 // Recent activity
+		}
+		genesisInitState.Accounts[addr] = tmp
+	}
+
+	l := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+
+	// First generate a valid block (with normal weights)
+	blkEval := l.nextBlock(t)
+	unfinishedBlock, err := blkEval.GenerateBlock(nil)
+	require.NoError(t, err)
+
+	// Get the block
+	seed := committee.Seed{}
+	crypto.RandBytes(seed[:])
+	generatedBlock := unfinishedBlock.UnfinishedBlock().WithProposer(seed, testPoolAddr, true)
+
+	// Now modify the ledger to return 0 weight for addrs[0] during validation
+	selectionID0 := genesisInitState.Accounts[addrs[0]].SelectionID
+	l.accountWeights = map[basics.Round]map[basics.Address]map[crypto.VRFVerifier]uint64{
+		0: {
+			addrs[0]: {selectionID0: 0}, // Zero weight for this account
+		},
+	}
+	// Set non-zero total weight
+	l.totalWeights = map[basics.Round]map[basics.Round]uint64{
+		0: {1: 1000},
+	}
+
+	// Add the zero-weight account to the absent list
+	generatedBlock.AbsentParticipationAccounts = append(generatedBlock.AbsentParticipationAccounts, addrs[0])
+
+	// Validation path should return an error (not panic)
+	_, err = Eval(context.Background(), l, generatedBlock, true, verify.GetMockedCache(true), nil, l.tracer)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "ExternalWeight returned zero")
+}
+
+// TestWeightAbsenteeismGenerationValidationConsistency verifies that generation and
+// validation produce identical absent lists for the same inputs. This is consensus-critical:
+// if generation and validation disagree, the network could fork.
+func TestWeightAbsenteeismGenerationValidationConsistency(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.GenesisWithProto(10, protocol.ConsensusFuture)
+
+	// Set up accounts: some should be absent, some should not
+	for i, addr := range addrs {
+		tmp := genesisInitState.Accounts[addr]
+		tmp.Status = basics.Online
+		tmp.MicroAlgos = basics.MicroAlgos{Raw: 1_000_000_000}
+		crypto.RandBytes(tmp.SelectionID[:])
+		crypto.RandBytes(tmp.VoteID[:])
+		tmp.IncentiveEligible = true
+		tmp.VoteFirstValid = 1
+		tmp.VoteLastValid = 1500
+		if i < 3 {
+			// These accounts should be absent (lastHeartbeat = 1, will be checked at round > 200)
+			tmp.LastHeartbeat = 1
+		} else {
+			// These accounts are recent and should NOT be absent
+			tmp.LastHeartbeat = 1200
+		}
+		genesisInitState.Accounts[addr] = tmp
+	}
+
+	l := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+
+	// Advance to round 202 where absence can be detected
+	// With default weights (based on microAlgos), absentFactor=20:
+	// totalWeight = 10B (10 accounts * 1B each)
+	// accountWeight = 1B
+	// known = (10B/1B) * 20 = 200
+	// So we need current - lastSeen > 200
+	// Accounts with lastHeartbeat=1 at round 202 would be absent
+	blkEval := l.nextBlock(t)
+	for i := 0; i < 201; i++ {
+		l.endBlock(t, blkEval)
+		blkEval = l.nextBlock(t)
+	}
+
+	// Now generate a block using the generation path
+	unfinishedBlock, err := blkEval.GenerateBlock(nil)
+	require.NoError(t, err)
+	generatedBlock := unfinishedBlock.UnfinishedBlock()
+
+	// The generated block should have some absent accounts
+	generatedAbsent := generatedBlock.AbsentParticipationAccounts
+	t.Logf("Generated block at round %d has %d absent accounts", generatedBlock.Round(), len(generatedAbsent))
+	require.NotEmpty(t, generatedAbsent, "should have at least one absent account at round 202")
+
+	// Complete the block properly for validation
+	seed := committee.Seed{}
+	crypto.RandBytes(seed[:])
+	completeBlock := generatedBlock.WithProposer(seed, testPoolAddr, true)
+
+	// Now validate the same block - this exercises the validation path
+	// The validation should accept the exact same absent list
+	_, err = Eval(context.Background(), l, completeBlock, true, verify.GetMockedCache(true), nil, l.tracer)
+	require.NoError(t, err, "validation should accept the generated absent list")
+
+	// Test that validation REJECTS adding an account that shouldn't be absent
+	badBlock := completeBlock
+	// Find an account that shouldn't be absent (lastHeartbeat = 1200)
+	var recentAddr basics.Address
+	for i, addr := range addrs {
+		if i >= 3 { // These have lastHeartbeat = 1200
+			recentAddr = addr
+			break
+		}
+	}
+	badBlock.AbsentParticipationAccounts = append(badBlock.AbsentParticipationAccounts, recentAddr)
+	_, err = Eval(context.Background(), l, badBlock, true, verify.GetMockedCache(true), nil, l.tracer)
+	require.Error(t, err, "validation should reject adding a non-absent account")
+	require.ErrorContains(t, err, "not absent")
 }

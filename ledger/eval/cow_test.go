@@ -73,6 +73,10 @@ func (ml *mockLedger) onlineStake() (basics.MicroAlgos, error) {
 	return basics.Algos(55_555), nil
 }
 
+func (ml *mockLedger) balanceRound() (basics.Round, error) {
+	return basics.Round(0), nil
+}
+
 func (ml *mockLedger) lookupAppParams(addr basics.Address, aidx basics.AppIndex, cacheOnly bool) (ledgercore.AppParamsDelta, bool, error) {
 	params, ok := ml.balanceMap[addr].AppParams[aidx]
 	return ledgercore.AppParamsDelta{Params: &params}, ok, nil // XXX make a copy?
