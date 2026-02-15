@@ -232,6 +232,7 @@ func testLedgerBasic(t *testing.T, cfg config.Local) {
 	l, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err, "could not open ledger")
 	defer l.Close()
+	setupTestWeightOracle(l)
 }
 
 func TestLedgerBasic(t *testing.T) {
@@ -259,6 +260,7 @@ func TestLedgerBlockHeaders(t *testing.T) {
 		l, err := OpenLedger(logging.Base(), t.Name()+string(cv), inMem, genesisInitState, cfg)
 		a.NoError(err, "could not open ledger")
 		defer l.Close()
+		setupTestWeightOracle(l)
 
 		lastBlock, err := l.Block(l.Latest())
 		a.NoError(err, "could not get last block")
@@ -452,6 +454,7 @@ func TestLedgerSingleTx(t *testing.T) {
 	l, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err, "could not open ledger")
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	proto := config.Consensus[protocol.ConsensusV7]
 	poolAddr := testPoolAddr
@@ -655,6 +658,7 @@ func TestLedgerSingleTxV24(t *testing.T) {
 	l, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err, "could not open ledger")
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	proto := config.Consensus[protoName]
 	poolAddr := testPoolAddr
@@ -819,6 +823,7 @@ func TestLedgerAppCrossRoundWrites(t *testing.T) {
 	l, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err, "could not open ledger")
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	proto := config.Consensus[protoName]
 	poolAddr := testPoolAddr
@@ -953,6 +958,7 @@ func TestLedgerAppMultiTxnWrites(t *testing.T) {
 	l, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err, "could not open ledger")
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	proto := config.Consensus[protoName]
 	poolAddr := testPoolAddr
@@ -1114,6 +1120,7 @@ func testLedgerSingleTxApplyData(t *testing.T, version protocol.ConsensusVersion
 	l, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err, "could not open ledger")
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	proto := config.Consensus[version]
 	poolAddr := testPoolAddr
@@ -1404,6 +1411,7 @@ func testLedgerRegressionFaultyLeaseFirstValidCheck2f3880f7(t *testing.T, versio
 	l, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err, "could not open ledger")
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	proto := config.Consensus[version]
 	poolAddr := testPoolAddr
@@ -1558,6 +1566,7 @@ func testLedgerReload(t *testing.T, cfg config.Local) {
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	blk := genesisInitState.Block
 	for i := 0; i < 128; i++ {
@@ -1601,6 +1610,7 @@ func TestGetLastCatchpointLabel(t *testing.T) {
 	ledger, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err, "could not open ledger")
 	defer ledger.Close()
+	setupTestWeightOracle(ledger)
 
 	// set some value
 	lastCatchpointLabel := "someCatchpointLabel"
@@ -1850,6 +1860,7 @@ func TestLedgerMemoryLeak(t *testing.T) {
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	const maxBlocks = 1_000_000
 	nftPerAcct := make(map[basics.Address]int)
@@ -2003,6 +2014,7 @@ func TestLookupAgreement(t *testing.T) {
 	ledger, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err, "could not open ledger")
 	defer ledger.Close()
+	setupTestWeightOracle(ledger)
 
 	oad, err := ledger.LookupAgreement(0, addrOnline)
 	require.NoError(t, err)
@@ -2034,6 +2046,7 @@ func TestGetKnockOfflineCandidates(t *testing.T) {
 	ledger, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err, "could not open ledger")
 	defer ledger.Close()
+	setupTestWeightOracle(ledger)
 
 	accts, err := ledger.GetKnockOfflineCandidates(0, config.Consensus[ver])
 	require.NoError(t, err)
@@ -2753,6 +2766,7 @@ func TestLedgerTxTailCachedBlockHeaders(t *testing.T) {
 	l, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	proto := config.Consensus[protocol.ConsensusFuture]
 	maxBlocks := 2 * proto.MaxTxnLife
@@ -2952,6 +2966,7 @@ func testVotersReloadFromDisk(t *testing.T, cfg config.Local) {
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	// we add blocks to the ledger to test reload from disk. we would like the history of the acctonline to extend.
 	// but we don't want to go behind  stateproof recovery interval
@@ -3000,6 +3015,7 @@ func testVotersReloadFromDiskAfterOneStateProofCommitted(t *testing.T, cfg confi
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	// quit the commitSyncer goroutine: this test flushes manually with triggerTrackerFlush
 	l.trackers.ctxCancel()
@@ -3101,6 +3117,7 @@ func testVotersReloadFromDiskPassRecoveryPeriod(t *testing.T, cfg config.Local) 
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	blk := genesisInitState.Block
 	var sp bookkeeping.StateProofTrackingData
@@ -3175,6 +3192,7 @@ func TestVotersCallbackPersistsAfterLedgerReload(t *testing.T) {
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	commitListener := mockCommitListener{}
 	l.RegisterVotersCommitListener(&commitListener)
@@ -3203,6 +3221,7 @@ func TestLedgerSPVerificationTracker(t *testing.T) {
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	numOfStateProofs := uint64(3)
 	firstStateProofContextConfirmedRound := proto.StateProofInterval
@@ -3286,6 +3305,7 @@ func TestLedgerReloadStateProofVerificationTracker(t *testing.T) {
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	numOfStateProofs := uint64(3)
 	firstStateProofContextConfirmedRound := proto.StateProofInterval
@@ -3369,6 +3389,7 @@ func TestLedgerCatchpointSPVerificationTracker(t *testing.T) {
 	l, err = OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	verifyStateProofVerificationTracking(t, &l.spVerification, basics.Round(firstStateProofDataTargetRound),
 		numTrackedDataFirstCatchpoint, proto.StateProofInterval, false, spverDBLoc)
@@ -3404,6 +3425,7 @@ func TestLedgerSPTrackerAfterReplay(t *testing.T) {
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	a.NoError(err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	// Add 1024 empty block without advancing NextStateProofRound
 	firstStateProofRound := basics.Round(proto.StateProofInterval * 2) // 512
@@ -3572,4 +3594,147 @@ func TestLedgerRegisterBlockListeners(t *testing.T) {
 		ids = append(ids, bl.(*testBlockListener).id)
 	}
 	require.Equal(t, []int{1, 2, 3}, ids)
+}
+
+// TestExternalWeightPanicsWithoutOracle verifies that ExternalWeight panics
+// when called without a weight oracle configured. This is the expected behavior
+// for production nodes - the oracle must be configured during node startup.
+func TestExternalWeightPanicsWithoutOracle(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genBalances, _, _ := ledgertesting.NewTestGenesis()
+	var genHash crypto.Digest
+	crypto.RandBytes(genHash[:])
+	cfg := config.GetDefaultLocal()
+	l := newSimpleLedgerFull(t, genBalances, protocol.ConsensusCurrentVersion, genHash, cfg)
+	defer l.Close()
+
+	// Clear the oracle that newSimpleLedgerFull set up for this specific test
+	l.SetWeightOracle(nil)
+
+	// Verify no oracle is set
+	require.Nil(t, l.WeightOracle())
+
+	// ExternalWeight should panic when called without an oracle
+	require.Panics(t, func() {
+		_, _ = l.ExternalWeight(basics.Round(0), basics.Address{}, crypto.VRFVerifier{})
+	}, "ExternalWeight should panic when no oracle is configured")
+}
+
+// TestTotalExternalWeightPanicsWithoutOracle verifies that TotalExternalWeight panics
+// when called without a weight oracle configured. This is the expected behavior
+// for production nodes - the oracle must be configured during node startup.
+func TestTotalExternalWeightPanicsWithoutOracle(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genBalances, _, _ := ledgertesting.NewTestGenesis()
+	var genHash crypto.Digest
+	crypto.RandBytes(genHash[:])
+	cfg := config.GetDefaultLocal()
+	l := newSimpleLedgerFull(t, genBalances, protocol.ConsensusCurrentVersion, genHash, cfg)
+	defer l.Close()
+
+	// Clear the oracle that newSimpleLedgerFull set up for this specific test
+	l.SetWeightOracle(nil)
+
+	// Verify no oracle is set
+	require.Nil(t, l.WeightOracle())
+
+	// TotalExternalWeight should panic when called without an oracle
+	require.Panics(t, func() {
+		_, _ = l.TotalExternalWeight(basics.Round(0), basics.Round(1))
+	}, "TotalExternalWeight should panic when no oracle is configured")
+}
+
+// mockTestWeightOracle is a simple mock implementation of WeightOracle for testing.
+type mockTestWeightOracle struct {
+	weight      uint64
+	totalWeight uint64
+	weightErr   error
+	totalErr    error
+}
+
+func (m *mockTestWeightOracle) Weight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	return m.weight, m.weightErr
+}
+
+func (m *mockTestWeightOracle) TotalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	return m.totalWeight, m.totalErr
+}
+
+func (m *mockTestWeightOracle) Ping() error {
+	return nil
+}
+
+func (m *mockTestWeightOracle) Identity() (ledgercore.DaemonIdentity, error) {
+	return ledgercore.DaemonIdentity{}, nil
+}
+
+// Compile-time check that mockTestWeightOracle implements WeightOracle
+var _ ledgercore.WeightOracle = (*mockTestWeightOracle)(nil)
+
+// TestExternalWeightWithOracle verifies that ExternalWeight correctly forwards
+// calls to the configured weight oracle.
+func TestExternalWeightWithOracle(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genBalances, _, _ := ledgertesting.NewTestGenesis()
+	var genHash crypto.Digest
+	crypto.RandBytes(genHash[:])
+	cfg := config.GetDefaultLocal()
+	l := newSimpleLedgerFull(t, genBalances, protocol.ConsensusCurrentVersion, genHash, cfg)
+	defer l.Close()
+
+	// Set up a custom mock oracle for this test
+	mockOracle := &mockTestWeightOracle{weight: 12345}
+	l.SetWeightOracle(mockOracle)
+	require.NotNil(t, l.WeightOracle())
+
+	// ExternalWeight should forward to the oracle
+	weight, err := l.ExternalWeight(basics.Round(100), basics.Address{1, 2, 3}, crypto.VRFVerifier{})
+	require.NoError(t, err)
+	require.Equal(t, uint64(12345), weight)
+
+	// Test error propagation
+	mockOracle.weightErr = &ledgercore.DaemonError{Code: "not_found", Msg: "test error"}
+	_, err = l.ExternalWeight(basics.Round(100), basics.Address{1, 2, 3}, crypto.VRFVerifier{})
+	require.Error(t, err)
+	var daemonErr *ledgercore.DaemonError
+	require.ErrorAs(t, err, &daemonErr)
+	require.Equal(t, "not_found", daemonErr.Code)
+}
+
+// TestTotalExternalWeightWithOracle verifies that TotalExternalWeight correctly
+// forwards calls to the configured weight oracle.
+func TestTotalExternalWeightWithOracle(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genBalances, _, _ := ledgertesting.NewTestGenesis()
+	var genHash crypto.Digest
+	crypto.RandBytes(genHash[:])
+	cfg := config.GetDefaultLocal()
+	l := newSimpleLedgerFull(t, genBalances, protocol.ConsensusCurrentVersion, genHash, cfg)
+	defer l.Close()
+
+	// Set up a custom mock oracle for this test
+	mockOracle := &mockTestWeightOracle{totalWeight: 999999}
+	l.SetWeightOracle(mockOracle)
+	require.NotNil(t, l.WeightOracle())
+
+	// TotalExternalWeight should forward to the oracle
+	totalWeight, err := l.TotalExternalWeight(basics.Round(100), basics.Round(110))
+	require.NoError(t, err)
+	require.Equal(t, uint64(999999), totalWeight)
+
+	// Test error propagation
+	mockOracle.totalErr = &ledgercore.DaemonError{Code: "internal", Msg: "test error"}
+	_, err = l.TotalExternalWeight(basics.Round(100), basics.Round(110))
+	require.Error(t, err)
+	var daemonErr *ledgercore.DaemonError
+	require.ErrorAs(t, err, &daemonErr)
+	require.Equal(t, "internal", daemonErr.Code)
 }

@@ -213,6 +213,7 @@ return`
 	l, err := OpenLedger(logging.Base(), "TestAppAccountData", true, genesisInitState, cfg)
 	a.NoError(err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	txHeader := transactions.Header{
 		Sender:      creator,
@@ -438,6 +439,7 @@ return`
 	l, err := OpenLedger(logging.Base(), t.Name(), true, genesisInitState, cfg)
 	a.NoError(err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	genesisID := t.Name()
 	txHeader := transactions.Header{
@@ -681,6 +683,7 @@ return`
 	l, err := OpenLedger(logging.Base(), t.Name(), true, genesisInitState, cfg)
 	a.NoError(err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	genesisID := t.Name()
 	txHeader := transactions.Header{
@@ -835,6 +838,7 @@ return`
 	l, err := OpenLedger(logging.Base(), t.Name(), true, genesisInitState, cfg)
 	a.NoError(err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	genesisID := t.Name()
 	txHeader := transactions.Header{
@@ -1031,6 +1035,7 @@ func testAppAccountDeltaIndicesCompatibility(t *testing.T, source string, accoun
 	l, err := OpenLedger(logging.Base(), t.Name(), true, genesisInitState, cfg)
 	a.NoError(err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	genesisID := t.Name()
 	txHeader := transactions.Header{
@@ -1171,6 +1176,7 @@ int 1
 			l, err := OpenLedger(logging.Base(), t.Name(), true, genesisInitState, cfg)
 			a.NoError(err)
 			defer l.Close()
+			setupTestWeightOracle(l)
 
 			genesisID := t.Name()
 			txHeader := transactions.Header{
@@ -1298,6 +1304,7 @@ int 1
 	l, err := OpenLedger(logging.Base(), t.Name(), true, genesisInitState, cfg)
 	a.NoError(err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	genesisID := t.Name()
 	txHeader := transactions.Header{
@@ -1379,6 +1386,7 @@ return
 	l1, err := OpenLedger(logging.Base(), dbPrefix, false, genesisInitState, cfg)
 	a.NoError(err)
 	defer l1.Close()
+	setupTestWeightOracle(l1)
 
 	genesisID := t.Name()
 	txHeader := transactions.Header{
@@ -1440,6 +1448,7 @@ return
 	l2, err := OpenLedger(logging.Base(), dbPrefix, false, genesisInitState, cfg)
 	a.NoError(err)
 	defer l2.Close()
+	setupTestWeightOracle(l2)
 
 	app, err = l2.LookupApplication(l2.Latest(), creator, appIdx)
 	a.NoError(err)

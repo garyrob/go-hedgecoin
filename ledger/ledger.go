@@ -106,9 +106,9 @@ type Ledger struct {
 	tracer logic.EvalTracer
 
 	// weightOracle is the external weight oracle client.
-	// When nil, ExternalWeight/TotalExternalWeight use stake as a fallback (for testing).
-	// Task 7 will set this via SetWeightOracle() during node startup.
-	// Production nodes MUST have this set; startup validation will enforce this.
+	// Set via SetWeightOracle() during node startup.
+	// ExternalWeight/TotalExternalWeight will panic if this is nil, so it MUST be set
+	// before consensus operations begin. Node startup validation enforces this.
 	weightOracle ledgercore.WeightOracle
 }
 
@@ -747,51 +747,29 @@ func (l *Ledger) WeightOracle() ledgercore.WeightOracle {
 }
 
 // ExternalWeight returns the external consensus weight for the given account.
-// If a weight oracle is configured, it queries the oracle.
-// Otherwise, falls back to using stake as weight (for testing compatibility).
+// This queries the configured weight oracle.
 //
-// IMPORTANT: Production nodes MUST have the weight oracle configured via SetWeightOracle().
-// The fallback to stake is only for existing tests that don't set up an oracle.
-// Task 7 startup validation will ensure the oracle is configured before consensus starts.
+// IMPORTANT: A weight oracle MUST be configured via SetWeightOracle() before calling this method.
+// Node startup validation ensures the oracle is configured before consensus starts.
+// If called without an oracle, this method panics to prevent unsafe consensus operation.
 func (l *Ledger) ExternalWeight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
-	if l.weightOracle != nil {
-		return l.weightOracle.Weight(balanceRound, addr, selectionID)
+	if l.weightOracle == nil {
+		logging.Base().Panicf("ExternalWeight called but no oracle configured")
 	}
-	// Fallback for testing: use stake as weight
-	l.trackerMu.RLock()
-	defer l.trackerMu.RUnlock()
-	acctData, _, _, err := l.accts.lookupLatest(addr)
-	if err != nil {
-		// Return "internal" error so vote verification fails gracefully
-		return 0, &ledgercore.DaemonError{Code: "internal", Msg: fmt.Sprintf("account lookup failed: %v", err)}
-	}
-	if acctData.MicroAlgos.Raw == 0 {
-		// Account doesn't exist or has zero stake - return "internal" error
-		// so vote verification fails gracefully rather than panicking.
-		return 0, &ledgercore.DaemonError{Code: "internal", Msg: fmt.Sprintf("account %v has zero stake in fallback mode", addr)}
-	}
-	return acctData.MicroAlgos.Raw, nil
+	return l.weightOracle.Weight(balanceRound, addr, selectionID)
 }
 
 // TotalExternalWeight returns the total external consensus weight.
-// If a weight oracle is configured, it queries the oracle.
-// Otherwise, falls back to using total online stake as weight (for testing compatibility).
+// This queries the configured weight oracle.
 //
-// IMPORTANT: Production nodes MUST have the weight oracle configured via SetWeightOracle().
-// The fallback to stake is only for existing tests that don't set up an oracle.
-// Task 7 startup validation will ensure the oracle is configured before consensus starts.
+// IMPORTANT: A weight oracle MUST be configured via SetWeightOracle() before calling this method.
+// Node startup validation ensures the oracle is configured before consensus starts.
+// If called without an oracle, this method panics to prevent unsafe consensus operation.
 func (l *Ledger) TotalExternalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
-	if l.weightOracle != nil {
-		return l.weightOracle.TotalWeight(balanceRound, voteRound)
+	if l.weightOracle == nil {
+		logging.Base().Panicf("TotalExternalWeight called but no oracle configured")
 	}
-	// Fallback for testing: use total online circulation as weight
-	l.trackerMu.RLock()
-	defer l.trackerMu.RUnlock()
-	circulation, err := l.acctsOnline.onlineCirculation(balanceRound, voteRound)
-	if err != nil {
-		return 0, err
-	}
-	return circulation.Raw, nil
+	return l.weightOracle.TotalWeight(balanceRound, voteRound)
 }
 
 // CheckDup return whether a transaction is a duplicate one.

@@ -51,6 +51,7 @@ import (
 	"github.com/algorand/go-algorand/network"
 	"github.com/algorand/go-algorand/network/messagetracer"
 	"github.com/algorand/go-algorand/network/p2p"
+	"github.com/algorand/go-algorand/node/weightoracle"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/rpcs"
 	"github.com/algorand/go-algorand/stateproof"
@@ -271,6 +272,13 @@ recreateNetwork:
 	err = node.loadParticipationKeys()
 	if err != nil {
 		log.Errorf("Cannot load participation keys: %v", err)
+		return nil, err
+	}
+
+	// Validate and configure the external weight oracle before consensus starts.
+	// This ensures the daemon is reachable and compatible before we allow
+	// participation in weighted consensus.
+	if err = node.initializeWeightOracle(); err != nil {
 		return nil, err
 	}
 
@@ -1101,6 +1109,176 @@ func insertStateProofToRegistry(part account.PersistedParticipation, node *Algor
 	}
 	return node.accountManager.Registry().AppendKeys(partID, keysSigner)
 
+}
+
+// initializeWeightOracle validates and configures the external weight oracle.
+// This function performs the following validation sequence:
+// 1. Validates that ExternalWeightOraclePort is configured (> 0)
+// 2. Creates the oracle client and pings the daemon
+// 3. Validates the daemon's identity (genesis hash, algorithm version, protocol version)
+// 4. Injects the oracle into the ledger
+// 5. Validates that all eligible participation keys have non-zero weight
+func (node *AlgorandFullNode) initializeWeightOracle() error {
+	port := node.config.ExternalWeightOraclePort
+	if port == 0 {
+		return fmt.Errorf("ExternalWeightOraclePort must be configured (required for weighted consensus)")
+	}
+
+	// Create the oracle client
+	oracle := weightoracle.NewClient(port)
+
+	// Ping the daemon to verify it's reachable
+	if err := oracle.Ping(); err != nil {
+		return fmt.Errorf("weight daemon not reachable at port %d: %w", port, err)
+	}
+	node.log.Infof("Weight daemon reachable at port %d", port)
+
+	// Get and validate daemon identity
+	identity, err := oracle.Identity()
+	if err != nil {
+		return fmt.Errorf("weight daemon identity query failed: %w", err)
+	}
+
+	// Validate genesis hash
+	if identity.GenesisHash != node.genesisHash {
+		return fmt.Errorf("weight daemon genesis hash mismatch: got %v, expected %v",
+			identity.GenesisHash, node.genesisHash)
+	}
+
+	// Validate algorithm version
+	if identity.WeightAlgorithmVersion != ledgercore.ExpectedWeightAlgorithmVersion {
+		return fmt.Errorf("weight daemon algorithm version mismatch: got %s, expected %s",
+			identity.WeightAlgorithmVersion, ledgercore.ExpectedWeightAlgorithmVersion)
+	}
+
+	// Validate protocol version
+	if identity.WeightProtocolVersion != ledgercore.ExpectedWeightProtocolVersion {
+		return fmt.Errorf("weight daemon protocol version mismatch: got %s, expected %s",
+			identity.WeightProtocolVersion, ledgercore.ExpectedWeightProtocolVersion)
+	}
+
+	node.log.Infof("Weight daemon identity validated: genesis=%v, algorithm=%s, protocol=%s",
+		identity.GenesisHash, identity.WeightAlgorithmVersion, identity.WeightProtocolVersion)
+
+	// Inject the oracle into the ledger
+	node.ledger.Ledger.SetWeightOracle(oracle)
+
+	// Validate participation key weights
+	if err := node.validateParticipationKeyWeights(oracle); err != nil {
+		return fmt.Errorf("participation key weight validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// validateParticipationKeyWeights validates that all eligible participation keys
+// have non-zero weight assigned by the external weight daemon.
+// A key is "eligible" if:
+// 1. It's valid for the current vote round (FirstValid <= voteRound <= LastValid)
+// 2. It has a VRF key
+// 3. The account is online in the balance snapshot
+// 4. The key's SelectionID matches the snapshot's SelectionID
+// 5. The key passes key-validity gating (VoteFirstValid/VoteLastValid)
+func (node *AlgorandFullNode) validateParticipationKeyWeights(oracle ledgercore.WeightOracle) error {
+	// Compute the vote round (next round to be agreed upon)
+	voteRound := node.ledger.Latest() + 1
+
+	// Get consensus params for the vote round
+	paramsRound := agreement.ParamsRound(voteRound)
+	cparams, err := node.ledger.ConsensusParams(paramsRound)
+	if err != nil {
+		// If we can't get params, it might be too early in the chain
+		node.log.Warnf("Cannot get consensus params for round %d (params round %d): %v; skipping participation key validation",
+			voteRound, paramsRound, err)
+		return nil
+	}
+
+	// Compute the balance round
+	balanceRound := agreement.BalanceRound(voteRound, cparams)
+
+	// Get all participation records
+	records := node.accountManager.Registry().GetAll()
+	if len(records) == 0 {
+		node.log.Infof("No participation keys registered; skipping weight validation")
+		return nil
+	}
+
+	node.log.Infof("Validating %d participation key(s) for vote round %d (balance round %d)",
+		len(records), voteRound, balanceRound)
+
+	validatedCount := 0
+	skippedCount := 0
+
+	for _, record := range records {
+		// Skip if key is not valid for this round
+		if voteRound < record.FirstValid || voteRound > record.LastValid {
+			node.log.Debugf("Skipping key %s for account %s: not valid for round %d (valid %d-%d)",
+				record.ParticipationID, record.Account, voteRound, record.FirstValid, record.LastValid)
+			skippedCount++
+			continue
+		}
+
+		// A nil VRF key indicates a corrupted or malformed participation record.
+		// Under normal operation, all participation keys have VRF secrets generated
+		// during key creation. A nil VRF suggests database corruption or a serious bug.
+		// We fail startup to surface this data integrity issue rather than silently
+		// ignoring the key.
+		if record.VRF == nil {
+			return fmt.Errorf("participation key %s for account %s has nil VRF (corrupted or malformed record)",
+				record.ParticipationID, record.Account)
+		}
+
+		// Look up the account in the balance snapshot
+		snapshotData, err := node.ledger.LookupAgreement(balanceRound, record.Account)
+		if err != nil {
+			// Account not online in snapshot, skip
+			node.log.Debugf("Skipping key %s for account %s: not found in balance snapshot at round %d: %v",
+				record.ParticipationID, record.Account, balanceRound, err)
+			skippedCount++
+			continue
+		}
+
+		// Skip if SelectionID doesn't match
+		if snapshotData.SelectionID != record.VRF.PK {
+			node.log.Debugf("Skipping key %s for account %s: SelectionID mismatch (key: %v, snapshot: %v)",
+				record.ParticipationID, record.Account, record.VRF.PK, snapshotData.SelectionID)
+			skippedCount++
+			continue
+		}
+
+		// Apply key-validity gating per DD §4.11
+		// The key is eligible only if:
+		// - voteRound >= snapshotData.VoteFirstValid
+		// - AND (snapshotData.VoteLastValid == 0 OR voteRound <= snapshotData.VoteLastValid)
+		keyEligible := (voteRound >= snapshotData.VoteFirstValid) &&
+			(snapshotData.VoteLastValid == 0 || voteRound <= snapshotData.VoteLastValid)
+		if !keyEligible {
+			node.log.Debugf("Skipping key %s for account %s: key-validity gating (vote round %d, key valid %d-%d)",
+				record.ParticipationID, record.Account, voteRound, snapshotData.VoteFirstValid, snapshotData.VoteLastValid)
+			skippedCount++
+			continue
+		}
+
+		// Query weight from the oracle
+		weight, err := oracle.Weight(balanceRound, record.Account, snapshotData.SelectionID)
+		if err != nil {
+			return fmt.Errorf("failed to query weight for account %s: %w", record.Account, err)
+		}
+
+		if weight == 0 {
+			return fmt.Errorf("participation key %s for account %s has zero weight at balance round %d; "+
+				"this key cannot participate in consensus",
+				record.ParticipationID, record.Account, balanceRound)
+		}
+
+		node.log.Infof("Validated participation key %s for account %s: weight=%d",
+			record.ParticipationID, record.Account, weight)
+		validatedCount++
+	}
+
+	node.log.Infof("Participation key validation complete: %d validated, %d skipped (not eligible)",
+		validatedCount, skippedCount)
+	return nil
 }
 
 var txPoolGauge = metrics.MakeGauge(metrics.MetricName{Name: "algod_tx_pool_count", Description: "current number of available transactions in pool"})

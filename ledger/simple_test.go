@@ -91,6 +91,11 @@ func newSimpleLedgerFull(t testing.TB, balances bookkeeping.GenesisBalances, cv 
 		GenesisHash: genHash,
 	}, cfg)
 	require.NoError(t, err)
+
+	// Set up mock weight oracle for tests - required because ExternalWeight/TotalExternalWeight
+	// panic without an oracle configured
+	setupTestWeightOracle(l)
+
 	return l
 }
 
