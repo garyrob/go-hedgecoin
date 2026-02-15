@@ -32,6 +32,8 @@ import (
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/pools"
 	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/ledger"
+	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
@@ -48,6 +50,44 @@ func keypair() *crypto.SignatureSecrets {
 }
 
 var proto = config.Consensus[protocol.ConsensusCurrentVersion]
+
+// testWeightOracle is a mock implementation of WeightOracle for assemble tests.
+type testWeightOracle struct {
+	l *ledger.Ledger
+}
+
+func (m *testWeightOracle) Weight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	acctData, _, _, _ := m.l.LookupLatest(addr)
+	if acctData.MicroAlgos.Raw == 0 {
+		return 1, nil
+	}
+	return acctData.MicroAlgos.Raw, nil
+}
+
+func (m *testWeightOracle) TotalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	circulation, err := m.l.OnlineCirculation(balanceRound, voteRound)
+	if err != nil {
+		return 0, err
+	}
+	return circulation.Raw, nil
+}
+
+func (m *testWeightOracle) Ping() error { return nil }
+
+func (m *testWeightOracle) Identity() (ledgercore.DaemonIdentity, error) {
+	return ledgercore.DaemonIdentity{
+		GenesisHash:            m.l.GenesisHash(),
+		WeightAlgorithmVersion: "1.0",
+		WeightProtocolVersion:  "1.0",
+	}, nil
+}
+
+var _ ledgercore.WeightOracle = (*testWeightOracle)(nil)
+
+// setupTestWeightOracle sets up a mock weight oracle for tests
+func setupTestWeightOracle(l *ledger.Ledger) {
+	l.SetWeightOracle(&testWeightOracle{l: l})
+}
 
 const mockBalancesMinBalance = 1000
 
@@ -85,6 +125,7 @@ func BenchmarkAssembleBlock(b *testing.B) {
 	cfg.Archival = true
 	ledger, err := data.LoadLedger(log, ledgerName, inMem, protocol.ConsensusCurrentVersion, genBal, genesisID, genesisHash, cfg)
 	require.NoError(b, err)
+	setupTestWeightOracle(ledger.Ledger)
 
 	l := ledger
 	next := l.LastRound()
@@ -214,6 +255,7 @@ func TestAssembleBlockTransactionPoolBehind(t *testing.T) {
 	cfg.Archival = true
 	ledger, err := data.LoadLedger(log, "ledgerName", inMem, protocol.ConsensusCurrentVersion, genBal, genesisID, genesisHash, cfg)
 	require.NoError(t, err)
+	setupTestWeightOracle(ledger.Ledger)
 
 	l := ledger
 	const txPoolSize = 6000

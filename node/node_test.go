@@ -128,6 +128,10 @@ func setupFullNodesEx(
 
 	util.SetFdSoftLimit(1000)
 
+	// Start a shared mock weight server for all nodes
+	mockWeightSrv := newMockWeightServer(t)
+	t.Cleanup(func() { mockWeightSrv.Close() })
+
 	if lp == nil {
 		lp = &singleFileFullNodeLoggerProvider{t: t}
 	}
@@ -164,6 +168,8 @@ func setupFullNodesEx(
 
 		ni, cfg := configHook(nodeInfos[i], defaultConfig)
 		nodeInfos[i] = ni
+		// Configure the weight oracle port to use our shared mock server
+		cfg.ExternalWeightOraclePort = mockWeightSrv.port
 		cfg.SaveToDisk(rootDirectory)
 
 		t.Logf("Root directory of node %d (%s): %s\n", i, ni.wsNetAddr(), rootDirectory)
@@ -187,22 +193,35 @@ func setupFullNodesEx(
 			panic(err)
 		}
 
-		filename = filepath.Join(genesisDir, pname)
-		access, err = db.MakeAccessor(filename, false, false)
-		if err != nil {
-			panic(err)
-		}
-		part, err := account.FillDBWithParticipationKeys(access, root.Address(), firstRound, lastRound, config.Consensus[protocol.ConsensusCurrentVersion].DefaultKeyDilution)
-		if err != nil {
-			panic(err)
-		}
-		access.Close()
+		// Only create participation keys for accounts with non-zero stake.
+		// Accounts with 0 stake will have 0 weight from the oracle and thus
+		// cannot participate in consensus. Creating participation keys for them
+		// would cause startup validation to fail.
+		var data basics.AccountData
+		if acctStake[i].Raw > 0 {
+			filename = filepath.Join(genesisDir, pname)
+			access, err = db.MakeAccessor(filename, false, false)
+			if err != nil {
+				panic(err)
+			}
+			part, err := account.FillDBWithParticipationKeys(access, root.Address(), firstRound, lastRound, config.Consensus[protocol.ConsensusCurrentVersion].DefaultKeyDilution)
+			if err != nil {
+				panic(err)
+			}
+			access.Close()
 
-		data := basics.AccountData{
-			Status:      basics.Online,
-			MicroAlgos:  acctStake[i],
-			SelectionID: part.VRFSecrets().PK,
-			VoteID:      part.VotingSecrets().OneTimeSignatureVerifier,
+			data = basics.AccountData{
+				Status:      basics.Online,
+				MicroAlgos:  acctStake[i],
+				SelectionID: part.VRFSecrets().PK,
+				VoteID:      part.VotingSecrets().OneTimeSignatureVerifier,
+			}
+		} else {
+			// Account with 0 stake: mark as Offline with no participation keys
+			data = basics.AccountData{
+				Status:     basics.Offline,
+				MicroAlgos: acctStake[i],
+			}
 		}
 		short := root.Address()
 		genesis[short] = data
@@ -227,6 +246,23 @@ func setupFullNodesEx(
 			},
 		})
 	}
+
+	// Set the mock weight server's genesis hash to match the test genesis (after allocations)
+	// Configure weights proportional to stake. Only accounts with stake (and thus participation
+	// keys) get non-zero weight. Total weight is the sum of all account weights.
+	mockWeightSrv.genesisHash = g.Hash()
+	mockWeightSrv.mu.Lock()
+	var totalWeight uint64
+	for addr, data := range genesis {
+		if data.MicroAlgos.Raw > 0 && data.Status == basics.Online {
+			// Weight = stake for Online accounts
+			mockWeightSrv.weights[addr.String()] = data.MicroAlgos.Raw
+			totalWeight += data.MicroAlgos.Raw
+		}
+	}
+	mockWeightSrv.totalWeight = totalWeight
+	mockWeightSrv.defaultWeight = 0 // Accounts without explicit weight get 0
+	mockWeightSrv.mu.Unlock()
 
 	nodes := make([]*AlgorandFullNode, numAccounts)
 	for i := range nodes {
@@ -647,7 +683,14 @@ func TestDefaultResourcePaths(t *testing.T) {
 		RewardsPool: poolAddr.String(),
 	}
 
+	// Set up mock weight server
+	mockWeightSrv := newMockWeightServer(t)
+	mockWeightSrv.genesisHash = genesis.Hash()
+	mockWeightSrv.defaultWeight = 1000000
+	t.Cleanup(func() { mockWeightSrv.Close() })
+
 	cfg := config.GetDefaultLocal()
+	cfg.ExternalWeightOraclePort = mockWeightSrv.port
 
 	// the logger is set up by the server, so we don't test this here
 	log := logging.Base()
@@ -691,7 +734,14 @@ func TestConfiguredDataDirs(t *testing.T) {
 		RewardsPool: poolAddr.String(),
 	}
 
+	// Set up mock weight server
+	mockWeightSrv := newMockWeightServer(t)
+	mockWeightSrv.genesisHash = genesis.Hash()
+	mockWeightSrv.defaultWeight = 1000000
+	t.Cleanup(func() { mockWeightSrv.Close() })
+
 	cfg := config.GetDefaultLocal()
+	cfg.ExternalWeightOraclePort = mockWeightSrv.port
 
 	cfg.HotDataDir = testDirHot
 	cfg.ColdDataDir = testDirCold
@@ -751,7 +801,14 @@ func TestConfiguredResourcePaths(t *testing.T) {
 		RewardsPool: poolAddr.String(),
 	}
 
+	// Set up mock weight server
+	mockWeightSrv := newMockWeightServer(t)
+	mockWeightSrv.genesisHash = genesis.Hash()
+	mockWeightSrv.defaultWeight = 1000000
+	t.Cleanup(func() { mockWeightSrv.Close() })
+
 	cfg := config.GetDefaultLocal()
+	cfg.ExternalWeightOraclePort = mockWeightSrv.port
 
 	cfg.HotDataDir = testDirHot
 	cfg.ColdDataDir = testDirCold
@@ -1160,6 +1217,13 @@ func TestNodeSetCatchpointCatchupMode(t *testing.T) {
 	log := logging.TestingLog(t)
 	cfg := config.GetDefaultLocal()
 
+	// Set up mock weight server
+	mockWeightSrv := newMockWeightServer(t)
+	mockWeightSrv.genesisHash = genesis.Hash()
+	mockWeightSrv.defaultWeight = 1000000
+	t.Cleanup(func() { mockWeightSrv.Close() })
+	cfg.ExternalWeightOraclePort = mockWeightSrv.port
+
 	tests := []struct {
 		name      string
 		enableP2P bool
@@ -1443,9 +1507,16 @@ func TestNodeMakeFullHybrid(t *testing.T) {
 	log := logging.NewLogger()
 	log.SetOutput(&buf)
 
+	// Set up mock weight server
+	mockWeightSrv := newMockWeightServer(t)
+	mockWeightSrv.genesisHash = genesis.Hash()
+	mockWeightSrv.defaultWeight = 1000000
+	t.Cleanup(func() { mockWeightSrv.Close() })
+
 	cfg := config.GetDefaultLocal()
 	cfg.EnableP2PHybridMode = true
 	cfg.NetAddress = ":0"
+	cfg.ExternalWeightOraclePort = mockWeightSrv.port
 
 	node, err := MakeFull(log, testDirectory, cfg, []string{}, genesis)
 	require.NoError(t, err)

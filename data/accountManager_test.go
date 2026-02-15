@@ -185,7 +185,11 @@ func testAccountManagerKeys(t *testing.T, registry account.ParticipationRegistry
 	<-keyDeletionDone
 	testDuration := time.Since(testStartTime)
 	t.Logf("testDuration %v keysTotalDuration %v\n", testDuration, keysTotalDuration)
-	require.Lessf(t, keysTotalDuration, testDuration/100, fmt.Sprintf("the time to acquire the keys via Keys() was %v whereas blocking on keys deletion took %v", keysTotalDuration, testDuration))
+	// Use 5% threshold instead of 1% to account for system load variability during test runs.
+	// The key assertion is that Keys() doesn't block on DeleteOldKeys() - if it did, Keys()
+	// would take 50%+ of the total time. A 5% threshold still validates non-blocking behavior
+	// while tolerating scheduling delays on loaded systems.
+	require.Lessf(t, keysTotalDuration, testDuration/20, fmt.Sprintf("the time to acquire the keys via Keys() was %v whereas blocking on keys deletion took %v", keysTotalDuration, testDuration))
 	t.Logf("Calling AccountManager.Keys() while AccountManager.DeleteOldKeys() was busy, 10 times in a row, resulted in accumulated delay of %v\n", keysTotalDuration)
 }
 

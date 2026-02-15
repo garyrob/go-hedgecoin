@@ -55,6 +55,46 @@ import (
 
 var proto = config.Consensus[protocol.ConsensusCurrentVersion]
 
+// testWeightOracle is a mock implementation of WeightOracle for pool tests.
+// It returns account stake as weight (simple passthrough behavior for testing).
+type testWeightOracle struct {
+	ledger *ledger.Ledger
+}
+
+func (m *testWeightOracle) Weight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	// Return the account's stake as weight for testing purposes.
+	// If the account has zero stake or doesn't exist, return a default weight of 1.
+	acctData, _, _, _ := m.ledger.LookupLatest(addr)
+	if acctData.MicroAlgos.Raw == 0 {
+		return 1, nil
+	}
+	return acctData.MicroAlgos.Raw, nil
+}
+
+func (m *testWeightOracle) TotalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	// Return the online circulation as total weight for testing purposes
+	circulation, err := m.ledger.OnlineCirculation(balanceRound, voteRound)
+	if err != nil {
+		return 0, err
+	}
+	return circulation.Raw, nil
+}
+
+func (m *testWeightOracle) Ping() error {
+	return nil
+}
+
+func (m *testWeightOracle) Identity() (ledgercore.DaemonIdentity, error) {
+	return ledgercore.DaemonIdentity{
+		GenesisHash:            m.ledger.GenesisHash(),
+		WeightAlgorithmVersion: "1.0",
+		WeightProtocolVersion:  "1.0",
+	}, nil
+}
+
+// Compile-time check that testWeightOracle implements WeightOracle
+var _ ledgercore.WeightOracle = (*testWeightOracle)(nil)
+
 func keypair() *crypto.SignatureSecrets {
 	var seed crypto.Seed
 	crypto.RandBytes(seed[:])
@@ -105,6 +145,11 @@ func mockLedger(t TestingT, initAccounts map[basics.Address]basics.AccountData, 
 	cfg.Archival = true
 	l, err := ledger.OpenLedger(logging.Base(), fn, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
+
+	// Set up mock weight oracle for pool tests
+	mockOracle := &testWeightOracle{ledger: l}
+	l.SetWeightOracle(mockOracle)
+
 	return l
 }
 

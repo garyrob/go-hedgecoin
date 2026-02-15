@@ -35,12 +35,52 @@ import (
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/logic"
+	"github.com/algorand/go-algorand/ledger"
+	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/node"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/util/db"
 )
+
+// testWeightOracle is a mock implementation of WeightOracle for API tests.
+type testWeightOracle struct {
+	l *ledger.Ledger
+}
+
+func (m *testWeightOracle) Weight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	acctData, _, _, _ := m.l.LookupLatest(addr)
+	if acctData.MicroAlgos.Raw == 0 {
+		return 1, nil
+	}
+	return acctData.MicroAlgos.Raw, nil
+}
+
+func (m *testWeightOracle) TotalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	circulation, err := m.l.OnlineCirculation(balanceRound, voteRound)
+	if err != nil {
+		return 0, err
+	}
+	return circulation.Raw, nil
+}
+
+func (m *testWeightOracle) Ping() error { return nil }
+
+func (m *testWeightOracle) Identity() (ledgercore.DaemonIdentity, error) {
+	return ledgercore.DaemonIdentity{
+		GenesisHash:            m.l.GenesisHash(),
+		WeightAlgorithmVersion: "1.0",
+		WeightProtocolVersion:  "1.0",
+	}, nil
+}
+
+var _ ledgercore.WeightOracle = (*testWeightOracle)(nil)
+
+// setupTestWeightOracle sets up a mock weight oracle for tests
+func setupTestWeightOracle(l *ledger.Ledger) {
+	l.SetWeightOracle(&testWeightOracle{l: l})
+}
 
 var cannedStatusReportGolden = node.StatusReport{
 	LastRound:                          basics.Round(1),
@@ -317,6 +357,7 @@ func testingenvWithBalances(t testing.TB, minMoneyAtStart, maxMoneyAtStart, numA
 	if err != nil {
 		panic(err)
 	}
+	setupTestWeightOracle(ledger.Ledger)
 
 	tx := make([]transactions.SignedTxn, TXs)
 	latest := ledger.Latest()

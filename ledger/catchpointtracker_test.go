@@ -893,6 +893,7 @@ func TestCatchpointTrackerNonblockingCatchpointWriting(t *testing.T) {
 	ledger, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err, "could not open ledger")
 	defer ledger.Close()
+	setupTestWeightOracle(ledger)
 
 	writeStallingTracker := &blockingTracker{
 		postCommitUnlockedEntryLock:   make(chan struct{}),
@@ -1030,6 +1031,7 @@ func TestCatchpointTrackerWaitNotBlocking(t *testing.T) {
 	ledger, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer ledger.Close()
+	setupTestWeightOracle(ledger)
 
 	writeStallingTracker := &blockingTracker{
 		postCommitUnlockedEntryLock:   make(chan struct{}),

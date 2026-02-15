@@ -25,7 +25,6 @@ import (
 	"os"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -2377,7 +2376,9 @@ func TestAcctUpdatesLookupLatestCacheRetry(t *testing.T) {
 	testProtocolVersion := protocol.ConsensusCurrentVersion
 	protoParams := config.Consensus[testProtocolVersion]
 
-	ml := makeMockLedgerForTracker(t, true, 1, testProtocolVersion, accts)
+	// Use a file-based database instead of in-memory to avoid shared cache
+	// complexities that can cause stale reads in some edge cases.
+	ml := makeMockLedgerForTracker(t, false, 1, testProtocolVersion, accts)
 	defer ml.Close()
 
 	conf := config.GetDefaultLocal()
@@ -2425,9 +2426,41 @@ func TestAcctUpdatesLookupLatestCacheRetry(t *testing.T) {
 	require.Equal(t, basics.Round(2), au.cachedDBRound)
 	oldCachedDBRound := au.cachedDBRound
 
-	// simulate the following state
-	// 1. addr1 and in baseAccounts and its round is less than addr1's data in baseResources
-	// 2. au.cachedDBRound is less than actual DB round
+	// This test verifies that lookupLatest correctly handles the retry scenario
+	// when the cached DB round is behind the actual DB round, and base accounts/resources
+	// are in the cache with mismatched rounds.
+	//
+	// The test setup creates a state where:
+	// 1. addr1 is in baseAccounts with round = (cachedDBRound - 1)
+	// 2. addr1's resources are in baseResources with round = cachedDBRound (original)
+	// 3. au.cachedDBRound is decremented to be less than actual DB round
+	//
+	// When lookupLatest runs:
+	// - It finds the account in baseAccounts (round matches currentDbRound after decrement)
+	// - checkDone() returns false because TotalAssetParams(1) != TotalAssets(2)
+	// - It goes to database to find resources
+	// - Database returns resourceDbRound = actual DB round (oldCachedDBRound)
+	// - Since resourceDbRound > currentDbRound, it goes to tryAgain and blocks
+	// - Test unblocks it by restoring cachedDBRound and committing a new block
+	//
+	// To ensure proper synchronization:
+	// 1. Hold accountsMu.Lock() FIRST
+	// 2. Start the goroutine (it will block waiting for RLock)
+	// 3. Give the goroutine time to be waiting on the lock
+	// 4. Modify state while holding the lock
+	// 5. Release the lock - goroutine acquires RLock and sees modified state
+
+	var ad basics.AccountData
+	var err error
+	done := make(chan struct{})
+	goroutineStarted := make(chan struct{})
+
+	// Strategy: Hold the write lock while starting the goroutine.
+	// The goroutine will try to acquire RLock in lookupLatest and block.
+	// When we release the lock, the goroutine will proceed and see our modified state.
+
+	au.accountsMu.Lock()
+	// Modify state while holding the lock
 	delete(au.accounts, addr1)
 	au.cachedDBRound--
 
@@ -2445,34 +2478,49 @@ func TestAcctUpdatesLookupLatestCacheRetry(t *testing.T) {
 	prd.Round = oldCachedDBRound
 	au.baseResources.write(prd, addr1)
 
-	var ad basics.AccountData
-	var err error
-
-	// lookupLatest blocks on waiting new round. There is no reliable way to say it is blocked,
-	// so run it in a goroutine and query it to ensure it is blocked.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	done := make(chan struct{})
+	// Start the goroutine while holding the lock.
+	// lookupLatest will try to acquire RLock and block until we release.
 	go func() {
+		close(goroutineStarted) // Signal that the goroutine has started
+		// At this point, we're waiting for the main goroutine to release accountsMu.
+		// When it does, we'll acquire RLock and lookupLatest will see the modified cachedDBRound.
 		ad, _, _, err = au.lookupLatest(addr1)
 		close(done)
-		wg.Done()
 	}()
 
-	// wait to ensure lookupLatest is stuck
-	maxIterations := 10
-	i := 0
-	for i < maxIterations {
-		select {
-		case <-done:
-			require.Fail(t, "lookupLatest returns without waiting for new block")
-		default:
-			i++
-			time.Sleep(10 * time.Millisecond)
+	// Wait for the goroutine to start. It will then block on RLock.
+	<-goroutineStarted
+
+	// Give the goroutine time to reach the RLock call in lookupLatest.
+	// This sleep provides margin for scheduler variability; the test verifies blocking
+	// behavior, not exact timing. The 5-second timeout below provides a safety net.
+	time.Sleep(10 * time.Millisecond)
+
+	// Now release the lock. The goroutine will acquire RLock and see our modified state.
+	au.accountsMu.Unlock()
+
+	// Wait for lookupLatest to enter the blocking state at tryAgain.
+	// Since we decremented cachedDBRound, when lookupLatest queries the database:
+	// - currentDbRound = cachedDBRound (decremented value, e.g., 1)
+	// - resourceDbRound = actual DB round (e.g., 2)
+	// - Since resourceDbRound > currentDbRound, it will goto tryAgain and block
+	// This sleep is acceptable because we're testing blocking behavior, not timing.
+	// The timeout at the end ensures the test doesn't hang indefinitely.
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify lookupLatest hasn't returned yet (it should be blocked)
+	select {
+	case <-done:
+		// If it completed, there's a problem - either an error or premature return
+		if err != nil {
+			require.Fail(t, "lookupLatest returned error instead of blocking: %v", err)
 		}
+		require.Fail(t, "lookupLatest returned without waiting for new block")
+	default:
+		// Expected: lookupLatest is blocked
 	}
 
-	// give it a new block and restore the original cachedDBRound value
+	// Restore the original cachedDBRound value and commit a new block to unblock lookupLatest
 	au.accountsMu.Lock()
 	au.cachedDBRound = oldCachedDBRound
 	au.accountsMu.Unlock()
@@ -2480,7 +2528,13 @@ func TestAcctUpdatesLookupLatestCacheRetry(t *testing.T) {
 	auNewBlock(t, rnd+1, au, accts[rnd], opts, nil)
 	auCommitSync(t, rnd+1, au, ml)
 
-	wg.Wait()
+	// Wait for lookupLatest to complete, with a timeout to prevent hanging
+	select {
+	case <-done:
+		// lookupLatest completed
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "lookupLatest did not complete within timeout")
+	}
 
 	require.NoError(t, err)
 	require.Equal(t, uint64(1000000), ad.MicroAlgos.Raw)

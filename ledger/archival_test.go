@@ -140,6 +140,7 @@ func TestArchival(t *testing.T) {
 	l, err := OpenLedger(log, dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 	wl := &wrappedLedger{
 		l: l,
 	}
@@ -220,6 +221,7 @@ func TestArchivalRestart(t *testing.T) {
 	l, err = OpenLedger(logging.Base(), dbPrefix, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	err = l.blockDBs.Rdb.Atomic(func(ctx context.Context, tx *sql.Tx) error {
 		latest, err = blockdb.BlockLatest(tx)
@@ -613,6 +615,7 @@ func TestArchivalCreatables(t *testing.T) {
 	l, err = OpenLedger(logging.Base(), dbPrefix, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	// check that we can fetch creator for all created assets and can't for
 	// deleted assets
@@ -744,6 +747,7 @@ func TestArchivalFromNonArchival(t *testing.T) {
 	l, err = OpenLedger(log, dbPrefix, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	err = l.blockDBs.Rdb.Atomic(func(ctx context.Context, tx *sql.Tx) error {
 		latest, err = blockdb.BlockLatest(tx)

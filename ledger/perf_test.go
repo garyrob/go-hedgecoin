@@ -52,6 +52,7 @@ func BenchmarkManyAccounts(b *testing.B) {
 	l, err := OpenLedger(logging.Base(), dbName, inMem, genesisInitState, cfg)
 	require.NoError(b, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	blk := genesisInitState.Block
 	for i := 0; i < b.N; i++ {
@@ -105,6 +106,7 @@ func BenchmarkValidate(b *testing.B) {
 	l, err := OpenLedger(logging.Base(), dbName, inMem, genesisInitState, cfg)
 	require.NoError(b, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	blk := genesisInitState.Block
 	for i := 0; i < b.N; i++ {

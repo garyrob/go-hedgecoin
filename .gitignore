@@ -21,8 +21,10 @@ mutex.out
 
 # Exclude go binaries built in-place
 cmd/algod/algod
+cmd/algofix/algofix
 cmd/goal/goal
 cmd/updater/updater
+algofix
 
 # custom golangci-lint binary with plugins
 custom-golangci-lint
