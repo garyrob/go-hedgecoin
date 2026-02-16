@@ -65,6 +65,8 @@ class WeightDaemon:
         latency: float = 0.0,
         weight_table: dict[str, int] | None = None,
         total_weight: int = 1000000,
+        default_weight: int | None = None,
+        address_weights: dict[str, int] | None = None,
     ):
         """
         Initialize the mock daemon.
@@ -77,6 +79,8 @@ class WeightDaemon:
             latency: Artificial latency to add to each response (seconds)
             weight_table: Dict mapping "address:selection_id:balance_round" to weight
             total_weight: Default total weight to return
+            default_weight: If set, return this weight for all queries (bypasses table lookup)
+            address_weights: Dict mapping just address to weight (simpler lookup, ignores selection_id/round)
         """
         self.port = port
         self.genesis_hash = genesis_hash
@@ -85,6 +89,8 @@ class WeightDaemon:
         self.latency = latency
         self.weight_table = weight_table or {}
         self.total_weight = total_weight
+        self.default_weight = default_weight
+        self.address_weights = address_weights or {}
         self.running = False
         self.server_socket: socket.socket | None = None
         self._lock = threading.Lock()
@@ -211,10 +217,18 @@ class WeightDaemon:
         if not balance_round:
             return {"error": "Missing balance_round field", "code": "bad_request"}
 
-        # Look up weight in table
-        key = f"{address}:{selection_id}:{balance_round}"
+        # If default_weight is set, return it for all queries (bypasses table lookup)
+        if self.default_weight is not None:
+            return {"weight": str(self.default_weight)}
 
         with self._lock:
+            # First check address_weights (simple address-only lookup)
+            # This is the preferred method for testing weighted consensus
+            if address in self.address_weights:
+                return {"weight": str(self.address_weights[address])}
+
+            # Fall back to full key lookup in weight_table
+            key = f"{address}:{selection_id}:{balance_round}"
             if key in self.weight_table:
                 weight = self.weight_table[key]
             else:
@@ -265,6 +279,23 @@ def load_weight_table(filename: str) -> dict[str, int]:
     return data.get("weights", {})
 
 
+def load_address_weights(filename: str) -> dict[str, int]:
+    """
+    Load address weights from a JSON file.
+
+    Expected format:
+    {
+        "ADDRESS1...": 1000000,
+        "ADDRESS2...": 1500000
+    }
+
+    This is simpler than the full weight table - just maps addresses to weights.
+    Used for testing weighted consensus where all nodes need the same view of weights.
+    """
+    with open(filename, "r") as f:
+        return json.load(f)
+
+
 def parse_genesis_hash(genesis_hash_str: str) -> bytes:
     """Parse genesis hash from hex or base64 string."""
     # Try hex first (64 chars for 32 bytes)
@@ -304,6 +335,9 @@ Examples:
 
     # Start with weight table from file
     python daemon.py --port 9876 --weight-file weights.json
+
+    # Start with fixed weight for all queries (useful for testing weighted consensus)
+    python daemon.py --port 9876 --default-weight 1000000 --total-weight 5500000
 
     # Test with netcat
     echo '{"type":"ping"}' | nc localhost 9876
@@ -353,6 +387,18 @@ Examples:
         default=1000000,
         help="Default total weight to return (default: 1000000)",
     )
+    parser.add_argument(
+        "--default-weight",
+        type=int,
+        default=None,
+        help="If set, return this weight for all queries (bypasses table lookup)",
+    )
+    parser.add_argument(
+        "--address-weights-file",
+        type=str,
+        default=None,
+        help="JSON file mapping addresses to weights (simpler than --weight-file)",
+    )
 
     args = parser.parse_args()
 
@@ -373,6 +419,16 @@ Examples:
             print(f"Error loading weight file: {e}", file=sys.stderr)
             sys.exit(1)
 
+    # Load address weights if specified (simpler format, just address -> weight)
+    address_weights = {}
+    if args.address_weights_file:
+        try:
+            address_weights = load_address_weights(args.address_weights_file)
+            print(f"Loaded {len(address_weights)} address weights from {args.address_weights_file}", file=sys.stderr)
+        except Exception as e:
+            print(f"Error loading address weights file: {e}", file=sys.stderr)
+            sys.exit(1)
+
     # Create and start daemon
     daemon = WeightDaemon(
         port=args.port,
@@ -382,6 +438,8 @@ Examples:
         latency=args.latency,
         weight_table=weight_table,
         total_weight=args.total_weight,
+        default_weight=args.default_weight,
+        address_weights=address_weights,
     )
 
     try:
