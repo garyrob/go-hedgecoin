@@ -50,6 +50,9 @@ const (
 	daemonStartupTimeout = 10 * time.Second
 	daemonPingRetries    = 20
 	daemonPingInterval   = 500 * time.Millisecond
+
+	// Environment variable to override test duration
+	testDurationEnvVar = "WEIGHT_TEST_DURATION"
 )
 
 // Node names (must match template) - participating nodes only
@@ -78,6 +81,56 @@ var fullCheckpoints = []time.Duration{
 // Checkpoint intervals for short test (5 minutes)
 var shortCheckpoints = []time.Duration{
 	5 * time.Minute,
+}
+
+// getTestDuration returns the test duration based on:
+// 1. WEIGHT_TEST_DURATION environment variable (if set)
+// 2. testing.Short() flag (5 minutes)
+// 3. Default full test (60 minutes)
+func getTestDuration(t *testing.T) time.Duration {
+	if envDuration := os.Getenv(testDurationEnvVar); envDuration != "" {
+		duration, err := time.ParseDuration(envDuration)
+		if err != nil {
+			t.Logf("Warning: invalid %s value %q, using default", testDurationEnvVar, envDuration)
+		} else if duration > 0 {
+			t.Logf("Using custom test duration from %s: %v", testDurationEnvVar, duration)
+			return duration
+		}
+	}
+	if testing.Short() {
+		return 5 * time.Minute
+	}
+	return 60 * time.Minute
+}
+
+// getCheckpoints returns checkpoint intervals for the given duration.
+// For durations <= 5 minutes, returns a single checkpoint at the end.
+// For longer durations, returns checkpoints at 5, 10, 20, 30, ... minutes,
+// plus a final checkpoint at the total duration.
+func getCheckpoints(totalDuration time.Duration) []time.Duration {
+	if totalDuration <= 5*time.Minute {
+		return []time.Duration{totalDuration}
+	}
+
+	var checkpoints []time.Duration
+	checkpoints = append(checkpoints, 5*time.Minute)
+
+	// Add 10 minute mark if duration allows
+	if totalDuration >= 10*time.Minute {
+		checkpoints = append(checkpoints, 10*time.Minute)
+	}
+
+	// Add 10-minute intervals after that
+	for t := 20 * time.Minute; t <= totalDuration; t += 10 * time.Minute {
+		checkpoints = append(checkpoints, t)
+	}
+
+	// Ensure final checkpoint is at totalDuration
+	if checkpoints[len(checkpoints)-1] != totalDuration {
+		checkpoints = append(checkpoints, totalDuration)
+	}
+
+	return checkpoints
 }
 
 // weightDaemon manages a Python weight daemon process
@@ -164,11 +217,9 @@ func TestWeightedConsensus(t *testing.T) {
 	startRound := basics.Round(status.LastRound)
 	t.Logf("Starting at round %d", startRound)
 
-	// Select checkpoints based on test mode
-	checkpoints := fullCheckpoints
-	if testing.Short() {
-		checkpoints = shortCheckpoints
-	}
+	// Select checkpoints based on test duration
+	testDuration := getTestDuration(t)
+	checkpoints := getCheckpoints(testDuration)
 
 	// Step 10: Run checkpoint loop collecting statistics
 	startTime := time.Now()
