@@ -1,4 +1,5 @@
 {
   "setup_script": "go mod download",
-  "verification_script": "make lint"
+  "verification_script": "make lint",
+  "copy_files": ["CLAUDE.local.md"]
 }
