@@ -47,6 +47,9 @@ import (
 	"github.com/algorand/go-algorand/util/metrics"
 )
 
+// Compile-time interface check: Ledger must implement ExternalWeighter
+var _ ledgercore.ExternalWeighter = (*Ledger)(nil)
+
 // Ledger is a database storing the contents of the ledger.
 type Ledger struct {
 	// Database connections to the DBs storing blocks and tracker state.
@@ -101,6 +104,12 @@ type Ledger struct {
 	dirsAndPrefix DirsAndPrefix
 
 	tracer logic.EvalTracer
+
+	// weightOracle is the external weight oracle client.
+	// Set via SetWeightOracle() during node startup.
+	// ExternalWeight/TotalExternalWeight will panic if this is nil, so it MUST be set
+	// before consensus operations begin. Node startup validation enforces this.
+	weightOracle ledgercore.WeightOracle
 }
 
 // DirsAndPrefix is a struct that holds the genesis directories and the database file prefix, so ledger can construct full paths to database files
@@ -723,6 +732,44 @@ func (l *Ledger) OnlineCirculation(rnd basics.Round, voteRnd basics.Round) (basi
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
 	return l.acctsOnline.onlineCirculation(rnd, voteRnd)
+}
+
+// SetWeightOracle sets the external weight oracle client.
+// This must be called during node startup before any consensus operations.
+// Task 7 will implement the startup sequence that calls this.
+func (l *Ledger) SetWeightOracle(oracle ledgercore.WeightOracle) {
+	l.weightOracle = oracle
+}
+
+// WeightOracle returns the configured weight oracle, or nil if not set.
+func (l *Ledger) WeightOracle() ledgercore.WeightOracle {
+	return l.weightOracle
+}
+
+// ExternalWeight returns the external consensus weight for the given account.
+// This queries the configured weight oracle.
+//
+// IMPORTANT: A weight oracle MUST be configured via SetWeightOracle() before calling this method.
+// Node startup validation ensures the oracle is configured before consensus starts.
+// If called without an oracle, this method panics to prevent unsafe consensus operation.
+func (l *Ledger) ExternalWeight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	if l.weightOracle == nil {
+		logging.Base().Panicf("ExternalWeight called but no oracle configured")
+	}
+	return l.weightOracle.Weight(balanceRound, addr, selectionID)
+}
+
+// TotalExternalWeight returns the total external consensus weight.
+// This queries the configured weight oracle.
+//
+// IMPORTANT: A weight oracle MUST be configured via SetWeightOracle() before calling this method.
+// Node startup validation ensures the oracle is configured before consensus starts.
+// If called without an oracle, this method panics to prevent unsafe consensus operation.
+func (l *Ledger) TotalExternalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	if l.weightOracle == nil {
+		logging.Base().Panicf("TotalExternalWeight called but no oracle configured")
+	}
+	return l.weightOracle.TotalWeight(balanceRound, voteRound)
 }
 
 // CheckDup return whether a transaction is a duplicate one.

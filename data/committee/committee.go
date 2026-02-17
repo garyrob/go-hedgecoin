@@ -48,9 +48,11 @@ type BalanceRecord struct {
 
 // Membership encodes the parameters used to verify membership in a committee.
 type Membership struct {
-	Record     BalanceRecord
-	Selector   Selector
-	TotalMoney basics.MicroAlgos
+	Record              BalanceRecord
+	Selector            Selector
+	TotalMoney          basics.MicroAlgos
+	ExternalWeight      uint64 // Individual account's external consensus weight
+	TotalExternalWeight uint64 // Total network external consensus weight
 }
 
 // A Seed contains cryptographic entropy which can be used to determine a

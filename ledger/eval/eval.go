@@ -1652,6 +1652,35 @@ func (eval *BlockEvaluator) generateKnockOfflineAccountsList(participating []bas
 		return
 	}
 
+	// Type-assert to ExternalWeighter to get weight-based absence data
+	ew, ok := eval.l.(ledgercore.ExternalWeighter)
+	if !ok {
+		logging.Base().Panicf("generateKnockOfflineAccountsList: ledger does not implement ExternalWeighter")
+	}
+
+	balanceRound, err := eval.state.balanceRound()
+	if err != nil {
+		logging.Base().Errorf("unable to compute balance round, no knockoffs: %v", err)
+		return
+	}
+
+	totalWeight, err := ew.TotalExternalWeight(balanceRound, current)
+	if err != nil {
+		var de *ledgercore.DaemonError
+		if errors.As(err, &de) && de.Code != "internal" {
+			// Non-internal daemon errors are invariant violations
+			logging.Base().Panicf("generateKnockOfflineAccountsList: TotalExternalWeight returned non-internal daemon error: %v", err)
+		}
+		// Internal daemon errors or network/timeout errors: log and return with no knockoffs
+		logging.Base().Errorf("unable to fetch total external weight, no knockoffs: %v", err)
+		return
+	}
+
+	// Cross-check: if we have online stake but no weight, something is wrong
+	if !onlineStake.IsZero() && totalWeight == 0 {
+		logging.Base().Panicf("generateKnockOfflineAccountsList: onlineStake non-zero (%v) but totalWeight is zero", onlineStake)
+	}
+
 	// Make a set of candidate addresses to check for expired or absentee status.
 	type candidateData struct {
 		VoteLastValid         basics.Round
@@ -1747,7 +1776,26 @@ func (eval *BlockEvaluator) generateKnockOfflineAccountsList(participating []bas
 				logging.Base().Errorf("unable to check account for absenteeism: %v", accountAddr)
 				continue
 			}
-			if isAbsent(onlineStake, oad.VotingStake(), lastSeen, current) ||
+
+			// Fetch the account's external weight for absence calculation
+			accountWeight, wErr := ew.ExternalWeight(balanceRound, accountAddr, oad.SelectionID)
+			if wErr != nil {
+				var de *ledgercore.DaemonError
+				if errors.As(wErr, &de) && de.Code != "internal" {
+					// Non-internal daemon errors are invariant violations
+					logging.Base().Panicf("generateKnockOfflineAccountsList: ExternalWeight returned non-internal daemon error for %v: %v", accountAddr, wErr)
+				}
+				// Internal daemon errors or network/timeout errors: skip this account
+				logging.Base().Errorf("unable to fetch external weight for %v, skipping absenteeism check: %v", accountAddr, wErr)
+				continue
+			}
+
+			// Account weight must be positive for circulation-population participants
+			if accountWeight == 0 {
+				logging.Base().Panicf("generateKnockOfflineAccountsList: ExternalWeight returned zero for online account %v", accountAddr)
+			}
+
+			if isAbsentByWeight(totalWeight, accountWeight, lastSeen, current) ||
 				ch.Failed(accountAddr, lastSeen) {
 				updates.AbsentParticipationAccounts = append(
 					updates.AbsentParticipationAccounts,
@@ -1760,6 +1808,9 @@ func (eval *BlockEvaluator) generateKnockOfflineAccountsList(participating []bas
 
 const absentFactor = 20
 
+// Compile-time check that absentFactor matches ledgercore.AbsenteeismMultiplier
+var _ = [1]int{}[absentFactor-ledgercore.AbsenteeismMultiplier]
+
 func isAbsent(totalOnlineStake basics.MicroAlgos, acctStake basics.MicroAlgos, lastSeen basics.Round, current basics.Round) bool {
 	// Don't consider accounts that were online when payouts went into effect as
 	// absent.  They get noticed the next time they propose or keyreg, which
@@ -1771,6 +1822,32 @@ func isAbsent(totalOnlineStake basics.MicroAlgos, acctStake basics.MicroAlgos, l
 	allowableLag, o := basics.Muldiv(absentFactor, totalOnlineStake.Raw, acctStake.Raw)
 	// just return false for overflow or a huge allowableLag. It implies the lag
 	// is longer that any network could be around, and computing with wraparound
+	// is annoying.
+	if o || allowableLag > math.MaxUint32 {
+		return false
+	}
+
+	return lastSeen+basics.Round(allowableLag) < current
+}
+
+// isAbsentByWeight checks if an account should be considered absent using
+// weight-based expected proposal intervals instead of stake-based intervals.
+//
+// Callers MUST enforce acctWeight > 0 before calling. The acctWeight == 0
+// guard below is a defensive fallback matching the existing isAbsent behavior;
+// it should never be reached in correct operation.
+func isAbsentByWeight(totalWeight uint64, acctWeight uint64, lastSeen basics.Round, current basics.Round) bool {
+	// Don't consider accounts that were online when payouts went into effect as
+	// absent. They get noticed the next time they propose or keyreg, which
+	// ought to be soon, if they are high stake or want to earn incentives.
+	if lastSeen == 0 || acctWeight == 0 {
+		return false
+	}
+	// See if the account has exceeded their expected observation interval.
+	// allowableLag = AbsenteeismMultiplier * totalWeight / acctWeight
+	allowableLag, o := basics.Muldiv(ledgercore.AbsenteeismMultiplier, totalWeight, acctWeight)
+	// Return false for overflow or a huge allowableLag. It implies the lag
+	// is longer than any network could be around, and computing with wraparound
 	// is annoying.
 	if o || allowableLag > math.MaxUint32 {
 		return false
@@ -1856,6 +1933,27 @@ func (eval *BlockEvaluator) validateAbsentOnlineAccounts() error {
 		}
 	}
 
+	// Type-assert to ExternalWeighter to get weight-based absence data
+	ew, ok := eval.l.(ledgercore.ExternalWeighter)
+	if !ok {
+		return fmt.Errorf("validateAbsentOnlineAccounts: ledger does not implement ExternalWeighter")
+	}
+
+	balanceRound, err := eval.state.balanceRound()
+	if err != nil {
+		return fmt.Errorf("validateAbsentOnlineAccounts: unable to compute balance round: %w", err)
+	}
+
+	totalWeight, err := ew.TotalExternalWeight(balanceRound, eval.Round())
+	if err != nil {
+		return fmt.Errorf("validateAbsentOnlineAccounts: unable to fetch total external weight: %w", err)
+	}
+
+	// Cross-check: if we have online stake but no weight, something is wrong
+	if !totalOnlineStake.IsZero() && totalWeight == 0 {
+		return fmt.Errorf("validateAbsentOnlineAccounts: totalOnlineStake non-zero (%v) but totalWeight is zero", totalOnlineStake)
+	}
+
 	for _, accountAddr := range eval.block.ParticipationUpdates.AbsentParticipationAccounts {
 		if _, exists := addressSet[accountAddr]; exists {
 			return fmt.Errorf("duplicate address found: %v", accountAddr)
@@ -1881,7 +1979,19 @@ func (eval *BlockEvaluator) validateAbsentOnlineAccounts() error {
 		if lErr != nil {
 			return fmt.Errorf("unable to check absent account: %v", accountAddr)
 		}
-		if isAbsent(totalOnlineStake, oad.VotingStake(), acctData.LastSeen(), eval.Round()) {
+
+		// Fetch the account's external weight for absence calculation
+		accountWeight, wErr := ew.ExternalWeight(balanceRound, accountAddr, oad.SelectionID)
+		if wErr != nil {
+			return fmt.Errorf("validateAbsentOnlineAccounts: unable to fetch external weight for %v: %w", accountAddr, wErr)
+		}
+
+		// Account weight must be positive for circulation-population participants
+		if accountWeight == 0 {
+			return fmt.Errorf("validateAbsentOnlineAccounts: ExternalWeight returned zero for online account %v", accountAddr)
+		}
+
+		if isAbsentByWeight(totalWeight, accountWeight, acctData.LastSeen(), eval.Round()) {
 			continue // ok. it's "normal absent"
 		}
 		if ch.Failed(accountAddr, acctData.LastSeen()) {

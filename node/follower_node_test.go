@@ -35,6 +35,7 @@ import (
 	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/logging"
+	"github.com/algorand/go-algorand/node/weightoracle"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
@@ -78,6 +79,18 @@ func setupFollowNode(t *testing.T) *AlgorandFollowerNode {
 	root := t.TempDir()
 	node, err := MakeFollower(logging.Base(), root, cfg, []string{}, genesis)
 	require.NoError(t, err)
+
+	// Set up a mock weight oracle for the follower node's ledger.
+	// This is needed for simulation operations that call TotalExternalWeight.
+	mockWeightSrv := newMockWeightServer(t)
+	mockWeightSrv.genesisHash = genesis.Hash()
+	mockWeightSrv.defaultWeight = 1000000 // Non-zero weight for all accounts
+	t.Cleanup(func() { mockWeightSrv.Close() })
+
+	// Create oracle client and set on ledger
+	oracle := weightoracle.NewClient(mockWeightSrv.port)
+	node.ledger.Ledger.SetWeightOracle(oracle)
+
 	return node
 }
 

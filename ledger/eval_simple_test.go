@@ -54,6 +54,7 @@ func TestBlockEvaluator(t *testing.T) {
 	l, err := OpenLedger(logging.TestingLog(t), t.Name(), true, genesisInitState, config.GetDefaultLocal())
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	genesisBlockHeader, err := l.BlockHdr(basics.Round(0))
 	require.NoError(t, err)
@@ -1252,6 +1253,7 @@ func TestRekeying(t *testing.T) {
 	l, err := OpenLedger(logging.TestingLog(t), t.Name(), true, genesisInitState, config.GetDefaultLocal())
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	// Make a new block
 	nextRound := l.Latest() + basics.Round(1)
@@ -1345,6 +1347,7 @@ func testEvalAppPoolingGroup(t *testing.T, schema basics.StateSchema, approvalPr
 	cfg := config.GetDefaultLocal()
 	l := newSimpleLedgerWithConsensusVersion(t, genBalances, consensusVersion, cfg)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	eval := nextBlock(t, l)
 
@@ -1431,6 +1434,7 @@ func TestMinBalanceChanges(t *testing.T) {
 	cfg := config.GetDefaultLocal()
 	l := newSimpleLedgerWithConsensusVersion(t, genBalances, protocol.ConsensusCurrentVersion, cfg)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	createTxn := txntest.Txn{
 		Type:   "acfg",
@@ -1511,6 +1515,7 @@ func TestAppInsMinBalance(t *testing.T) {
 	cfg := config.GetDefaultLocal()
 	l := newSimpleLedgerWithConsensusVersion(t, genBalances, protocol.ConsensusV30, cfg)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	const appID basics.AppIndex = 1
 

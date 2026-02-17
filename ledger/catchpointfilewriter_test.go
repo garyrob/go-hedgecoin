@@ -390,6 +390,7 @@ func testWriteCatchpoint(t *testing.T, params config.ConsensusParams, rdb tracke
 
 	l := testNewLedgerFromCatchpoint(t, rdb, filepath)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	return catchpointFileHeader
 }
@@ -638,6 +639,7 @@ func TestFullCatchpointWriterOverflowAccounts(t *testing.T) {
 
 	l := testNewLedgerFromCatchpoint(t, ml.trackerDB(), catchpointFilePath)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	// verify that the account data aligns with what we originally stored :
 	for addr, acct := range accts {
@@ -836,6 +838,7 @@ func TestFullCatchpointWriter(t *testing.T) {
 
 	l := testNewLedgerFromCatchpoint(t, ml.trackerDB(), catchpointFilePath)
 	defer l.Close()
+	setupTestWeightOracle(l)
 	// verify that the account data aligns with what we originally stored :
 	for addr, acct := range accts {
 		acctData, validThrough, _, err := l.LookupLatest(addr)
@@ -988,6 +991,7 @@ func testExactAccountChunk(t *testing.T, proto protocol.ConsensusVersion, extraB
 
 	l := testNewLedgerFromCatchpoint(t, dl.generator.trackerDB(), catchpointFilePath)
 	defer l.Close()
+	setupTestWeightOracle(l)
 }
 
 // Exercises interactions between transaction evaluation and catchpoint
@@ -1041,6 +1045,7 @@ func TestCatchpointAfterTxns(t *testing.T) {
 
 	l := testNewLedgerFromCatchpoint(t, dl.validator.trackerDB(), catchpointFilePath)
 	defer l.Close()
+	setupTestWeightOracle(l)
 	values, err := l.LookupKeysByPrefix(l.Latest(), "bx:", 10)
 	require.NoError(t, err)
 	require.Len(t, values, 1)
@@ -1059,6 +1064,7 @@ func TestCatchpointAfterTxns(t *testing.T) {
 	{
 		l = testNewLedgerFromCatchpoint(t, dl.validator.trackerDB(), catchpointFilePath)
 		defer l.Close()
+		setupTestWeightOracle(l)
 		_, _, algos, err := l.LookupLatest(last)
 		require.NoError(t, err)
 		require.Equal(t, basics.MicroAlgos{}, algos)
@@ -1073,6 +1079,7 @@ func TestCatchpointAfterTxns(t *testing.T) {
 
 	l = testNewLedgerFromCatchpoint(t, dl.validator.trackerDB(), catchpointFilePath)
 	defer l.Close()
+	setupTestWeightOracle(l)
 	values, err = l.LookupKeysByPrefix(l.Latest(), "bx:", 10)
 	require.NoError(t, err)
 	require.Len(t, values, 1)
@@ -1286,6 +1293,7 @@ assert
 
 	l := testNewLedgerFromCatchpoint(t, dl.generator.trackerDB(), catchpointFilePath)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	catchpointOAHash, catchpointOARows, err := calculateVerificationHash(context.Background(), l.trackerDBs.MakeOrderedOnlineAccountsIter, 0, false)
 	require.NoError(t, err)
@@ -1387,6 +1395,7 @@ func TestCatchpointAfterBoxTxns(t *testing.T) {
 
 	l := testNewLedgerFromCatchpoint(t, dl.generator.trackerDB(), catchpointFilePath)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	values, err := l.LookupKeysByPrefix(l.Latest(), "bx:", 10)
 	require.NoError(t, err)
@@ -1410,6 +1419,7 @@ func TestCatchpointOnlineAccountUpdateRound(t *testing.T) {
 	proto := protocol.ConsensusFuture
 	l := newSimpleLedgerWithConsensusVersion(t, genBalances, proto, cfg, simpleLedgerOnDisk())
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	pay := txntest.Txn{
 		Type:     "pay",

@@ -51,9 +51,11 @@ func TestAccountSelected(t *testing.T) {
 				Step:   Propose,
 			}
 			m := Membership{
-				Record:     record,
-				Selector:   sel,
-				TotalMoney: totalMoney,
+				Record:              record,
+				Selector:            sel,
+				TotalMoney:          totalMoney,
+				ExternalWeight:      record.VotingStake().Raw,
+				TotalExternalWeight: totalMoney.Raw,
 			}
 			u := MakeCredential(vrfSecrets[i], sel)
 			credential, _ := u.Verify(proto, m)
@@ -75,9 +77,11 @@ func TestAccountSelected(t *testing.T) {
 				Step:   step,
 			}
 			m := Membership{
-				Record:     record,
-				Selector:   sel,
-				TotalMoney: totalMoney,
+				Record:              record,
+				Selector:            sel,
+				TotalMoney:          totalMoney,
+				ExternalWeight:      record.VotingStake().Raw,
+				TotalExternalWeight: totalMoney.Raw,
 			}
 			u := MakeCredential(vrfSecrets[i], sel)
 			credential, _ := u.Verify(proto, m)
@@ -115,9 +119,11 @@ func TestRichAccountSelected(t *testing.T) {
 		Step:   Propose,
 	}
 	m := Membership{
-		Record:     record,
-		Selector:   sel,
-		TotalMoney: TotalMoney,
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          TotalMoney,
+		ExternalWeight:      record.VotingStake().Raw,
+		TotalExternalWeight: TotalMoney.Raw,
 	}
 
 	lu := MakeCredential(vrfSecrets[0], sel)
@@ -135,9 +141,11 @@ func TestRichAccountSelected(t *testing.T) {
 		Step:   step,
 	}
 	m = Membership{
-		Record:     record,
-		Selector:   sel,
-		TotalMoney: TotalMoney,
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          TotalMoney,
+		ExternalWeight:      record.VotingStake().Raw,
+		TotalExternalWeight: TotalMoney.Raw,
 	}
 
 	cu := MakeCredential(vrfSecrets[0], sel)
@@ -176,9 +184,11 @@ func TestPoorAccountSelectedLeaders(t *testing.T) {
 
 			record.MicroAlgosWithRewards.Raw = uint64(1000 / len(addresses))
 			m := Membership{
-				Record:     record,
-				Selector:   sel,
-				TotalMoney: basics.MicroAlgos{Raw: 1000},
+				Record:              record,
+				Selector:            sel,
+				TotalMoney:          basics.MicroAlgos{Raw: 1000},
+				ExternalWeight:      record.VotingStake().Raw,
+				TotalExternalWeight: 1000,
 			}
 
 			u := MakeCredential(vrfSecrets[j], sel)
@@ -226,9 +236,11 @@ func TestPoorAccountSelectedCommittee(t *testing.T) {
 
 			record.MicroAlgosWithRewards.Raw = uint64(2000 / len(addresses))
 			m := Membership{
-				Record:     record,
-				Selector:   sel,
-				TotalMoney: basics.MicroAlgos{Raw: 2000},
+				Record:              record,
+				Selector:            sel,
+				TotalMoney:          basics.MicroAlgos{Raw: 2000},
+				ExternalWeight:      record.VotingStake().Raw,
+				TotalExternalWeight: 2000,
 			}
 			u := MakeCredential(vrfSecrets[j], sel)
 			credential, _ := u.Verify(proto, m)
@@ -267,9 +279,11 @@ func TestNoMoneyAccountNotSelected(t *testing.T) {
 
 		record.MicroAlgosWithRewards.Raw = 0
 		m := Membership{
-			Record:     record,
-			Selector:   sel,
-			TotalMoney: basics.MicroAlgos{Raw: 1000},
+			Record:              record,
+			Selector:            sel,
+			TotalMoney:          basics.MicroAlgos{Raw: 1000},
+			ExternalWeight:      0, // zero weight means not selected
+			TotalExternalWeight: 1000,
 		}
 		u := MakeCredential(zeroVRFSecret, sel)
 		_, err := u.Verify(proto, m)
@@ -301,9 +315,11 @@ func TestLeadersSelected(t *testing.T) {
 	}
 
 	m := Membership{
-		Record:     record,
-		Selector:   sel,
-		TotalMoney: totalMoney,
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          totalMoney,
+		ExternalWeight:      record.VotingStake().Raw,
+		TotalExternalWeight: totalMoney.Raw,
 	}
 	_, err := MakeCredential(vrfSecrets[0], sel).Verify(proto, m)
 	require.NoError(t, err, "leader should have been selected")
@@ -333,9 +349,11 @@ func TestCommitteeSelected(t *testing.T) {
 	}
 
 	m := Membership{
-		Record:     record,
-		Selector:   sel,
-		TotalMoney: totalMoney,
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          totalMoney,
+		ExternalWeight:      record.VotingStake().Raw,
+		TotalExternalWeight: totalMoney.Raw,
 	}
 	_, err := MakeCredential(vrfSecrets[0], sel).Verify(proto, m)
 	require.NoError(t, err, "committee should have been selected")
@@ -361,15 +379,306 @@ func TestAccountNotSelected(t *testing.T) {
 		}
 		record.MicroAlgosWithRewards.Raw = 0
 		m := Membership{
-			Record:     record,
-			Selector:   sel,
-			TotalMoney: totalMoney,
+			Record:              record,
+			Selector:            sel,
+			TotalMoney:          totalMoney,
+			ExternalWeight:      0, // zero weight means not selected
+			TotalExternalWeight: totalMoney.Raw,
 		}
 		credential, _ := MakeCredential(vrfSecrets[i], sel).Verify(proto, m)
 		require.False(t, credential.Selected())
 		leaders += credential.Weight
 	}
 	require.Zero(t, leaders)
+}
+
+// TestZeroWeightReturnsError verifies that ExternalWeight == 0 returns an error
+func TestZeroWeightReturnsError(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	selParams, _, round, addresses, _, vrfSecrets := testingenv(t, 10, 2000, nil)
+	period := Period(0)
+	step := Propose
+
+	ok, record, selectionSeed, totalMoney := selParams(addresses[0])
+	require.True(t, ok)
+
+	sel := AgreementSelector{
+		Seed:   selectionSeed,
+		Round:  round,
+		Period: period,
+		Step:   step,
+	}
+
+	m := Membership{
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          totalMoney,
+		ExternalWeight:      0, // zero weight
+		TotalExternalWeight: totalMoney.Raw,
+	}
+
+	u := MakeCredential(vrfSecrets[0], sel)
+	cred, err := u.Verify(proto, m)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "weight 0")
+	require.Zero(t, cred.Weight)
+}
+
+// TestNonZeroWeightRunsSortition verifies that ExternalWeight > 0 runs sortition
+func TestNonZeroWeightRunsSortition(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	selParams, _, round, addresses, _, vrfSecrets := testingenv(t, 10, 2000, nil)
+	period := Period(0)
+	step := Propose
+
+	ok, record, selectionSeed, totalMoney := selParams(addresses[0])
+	require.True(t, ok)
+
+	sel := AgreementSelector{
+		Seed:   selectionSeed,
+		Round:  round,
+		Period: period,
+		Step:   step,
+	}
+
+	// Set weight to half of total - high probability of selection
+	m := Membership{
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          totalMoney,
+		ExternalWeight:      totalMoney.Raw / 2,
+		TotalExternalWeight: totalMoney.Raw,
+	}
+
+	u := MakeCredential(vrfSecrets[0], sel)
+	cred, err := u.Verify(proto, m)
+	require.NoError(t, err)
+	require.Greater(t, cred.Weight, uint64(0))
+}
+
+// TestTotalExternalWeightLessThanExternalWeightPanics verifies population alignment check
+func TestTotalExternalWeightLessThanExternalWeightPanics(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	selParams, _, round, addresses, _, vrfSecrets := testingenv(t, 10, 2000, nil)
+	period := Period(0)
+	step := Propose
+
+	ok, record, selectionSeed, totalMoney := selParams(addresses[0])
+	require.True(t, ok)
+
+	sel := AgreementSelector{
+		Seed:   selectionSeed,
+		Round:  round,
+		Period: period,
+		Step:   step,
+	}
+
+	m := Membership{
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          totalMoney,
+		ExternalWeight:      1000,
+		TotalExternalWeight: 500, // less than ExternalWeight
+	}
+
+	u := MakeCredential(vrfSecrets[0], sel)
+	require.Panics(t, func() {
+		u.Verify(proto, m)
+	})
+}
+
+// TestTotalExternalWeightZeroWithPositiveWeightPanics verifies panic when TotalExternalWeight is 0 but ExternalWeight > 0
+func TestTotalExternalWeightZeroWithPositiveWeightPanics(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	selParams, _, round, addresses, _, vrfSecrets := testingenv(t, 10, 2000, nil)
+	period := Period(0)
+	step := Propose
+
+	ok, record, selectionSeed, totalMoney := selParams(addresses[0])
+	require.True(t, ok)
+
+	sel := AgreementSelector{
+		Seed:   selectionSeed,
+		Round:  round,
+		Period: period,
+		Step:   step,
+	}
+
+	m := Membership{
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          totalMoney,
+		ExternalWeight:      100,
+		TotalExternalWeight: 0, // zero total with positive individual weight
+	}
+
+	u := MakeCredential(vrfSecrets[0], sel)
+	require.Panics(t, func() {
+		u.Verify(proto, m)
+	})
+}
+
+// TestExpectedSelectionExceedsTotalWeightPanics verifies panic when expectedSelection > TotalExternalWeight
+func TestExpectedSelectionExceedsTotalWeightPanics(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	selParams, _, round, addresses, _, vrfSecrets := testingenv(t, 10, 2000, nil)
+	period := Period(0)
+	step := Soft // Soft step has large committee size
+
+	ok, record, selectionSeed, _ := selParams(addresses[0])
+	require.True(t, ok)
+
+	sel := AgreementSelector{
+		Seed:   selectionSeed,
+		Round:  round,
+		Period: period,
+		Step:   step,
+	}
+
+	// CommitteeSize for Soft step is large (e.g., 2990)
+	// Set TotalExternalWeight to something smaller than that
+	m := Membership{
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          basics.MicroAlgos{Raw: 100},
+		ExternalWeight:      50,
+		TotalExternalWeight: 100, // smaller than step.CommitteeSize(proto)
+	}
+
+	u := MakeCredential(vrfSecrets[0], sel)
+	require.Panics(t, func() {
+		u.Verify(proto, m)
+	})
+}
+
+// TestStakeValueIsIrrelevant verifies that stake value doesn't affect sortition outcome
+func TestStakeValueIsIrrelevant(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	selParams, _, round, addresses, _, vrfSecrets := testingenv(t, 10, 2000, nil)
+	period := Period(0)
+	step := Propose
+
+	ok, record, selectionSeed, totalMoney := selParams(addresses[0])
+	require.True(t, ok)
+
+	sel := AgreementSelector{
+		Seed:   selectionSeed,
+		Round:  round,
+		Period: period,
+		Step:   step,
+	}
+
+	// First run with stake = 0
+	record.MicroAlgosWithRewards.Raw = 0
+	m1 := Membership{
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          totalMoney,
+		ExternalWeight:      totalMoney.Raw / 2,
+		TotalExternalWeight: totalMoney.Raw,
+	}
+
+	u := MakeCredential(vrfSecrets[0], sel)
+	cred1, err1 := u.Verify(proto, m1)
+
+	// Second run with stake = 1,000,000
+	record.MicroAlgosWithRewards.Raw = 1000000
+	m2 := Membership{
+		Record:              record,
+		Selector:            sel,
+		TotalMoney:          totalMoney,
+		ExternalWeight:      totalMoney.Raw / 2,
+		TotalExternalWeight: totalMoney.Raw,
+	}
+
+	cred2, err2 := u.Verify(proto, m2)
+
+	// Both should have identical outcomes since weight is the same
+	require.Equal(t, err1 == nil, err2 == nil)
+	require.Equal(t, cred1.Weight, cred2.Weight)
+	require.Equal(t, cred1.VrfOut, cred2.VrfOut)
+}
+
+// TestStatisticalValidation validates that weight-based sortition produces expected distributions.
+// This test runs multiple accounts through sortition and verifies the total selected weight
+// matches expectations within statistical bounds.
+func TestStatisticalValidation(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	seedGen := rand.New(rand.NewSource(42))
+	// Use the same pattern as TestAccountSelected which validates committee sizes
+	selParams, _, round, addresses, _, vrfSecrets := testingenv(t, 100, 2000, seedGen)
+	period := Period(0)
+
+	// Test leaders (Propose step)
+	leaders := uint64(0)
+	for i := range addresses {
+		ok, record, selectionSeed, totalMoney := selParams(addresses[i])
+		if !ok {
+			t.Errorf("can't read selection params")
+		}
+		sel := AgreementSelector{
+			Seed:   selectionSeed,
+			Round:  round,
+			Period: period,
+			Step:   Propose,
+		}
+		m := Membership{
+			Record:              record,
+			Selector:            sel,
+			TotalMoney:          totalMoney,
+			ExternalWeight:      record.VotingStake().Raw,
+			TotalExternalWeight: totalMoney.Raw,
+		}
+		u := MakeCredential(vrfSecrets[i], sel)
+		credential, _ := u.Verify(proto, m)
+		leaders += credential.Weight
+	}
+
+	// Validate leaders are within expected bounds (matching pattern from TestAccountSelected)
+	require.GreaterOrEqual(t, leaders, uint64(proto.NumProposers/2),
+		"Leaders selected too low: got %d, expected at least %d", leaders, proto.NumProposers/2)
+	require.LessOrEqual(t, leaders, uint64(2*proto.NumProposers),
+		"Leaders selected too high: got %d, expected at most %d", leaders, 2*proto.NumProposers)
+
+	// Test committee (Soft step)
+	committee := uint64(0)
+	step := Soft
+	for i, addr := range addresses {
+		_, record, selectionSeed, totalMoney := selParams(addr)
+		sel := AgreementSelector{
+			Seed:   selectionSeed,
+			Round:  round,
+			Period: period,
+			Step:   step,
+		}
+		m := Membership{
+			Record:              record,
+			Selector:            sel,
+			TotalMoney:          totalMoney,
+			ExternalWeight:      record.VotingStake().Raw,
+			TotalExternalWeight: totalMoney.Raw,
+		}
+		u := MakeCredential(vrfSecrets[i], sel)
+		credential, _ := u.Verify(proto, m)
+		committee += credential.Weight
+	}
+
+	// Validate committee is within ±20% of expected (matching pattern from TestAccountSelected)
+	expectedCommittee := float64(step.CommitteeSize(proto))
+	require.GreaterOrEqual(t, committee, uint64(0.8*expectedCommittee),
+		"Committee selected too low: got %d, expected at least %.0f", committee, 0.8*expectedCommittee)
+	require.LessOrEqual(t, committee, uint64(1.2*expectedCommittee),
+		"Committee selected too high: got %d, expected at most %.0f", committee, 1.2*expectedCommittee)
+
+	t.Logf("Statistical validation: %d leaders (expected ~%d), %d committee (expected ~%d)",
+		leaders, proto.NumProposers, committee, step.CommitteeSize(proto))
 }
 
 // TODO update to remove VRF verification overhead
@@ -404,9 +713,11 @@ func BenchmarkSortition(b *testing.B) {
 
 		record.MicroAlgosWithRewards.Raw = uint64(money[i])
 		m := Membership{
-			Record:     record,
-			Selector:   sel,
-			TotalMoney: basics.MicroAlgos{Raw: uint64(totalMoney)},
+			Record:              record,
+			Selector:            sel,
+			TotalMoney:          basics.MicroAlgos{Raw: uint64(totalMoney)},
+			ExternalWeight:      uint64(money[i]),
+			TotalExternalWeight: uint64(totalMoney),
 		}
 		credentials[i], _ = MakeCredential(vrfSecrets[0], sel).Verify(proto, m)
 	}

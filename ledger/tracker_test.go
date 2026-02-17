@@ -277,6 +277,7 @@ func TestTrackers_DbRoundDataRace(t *testing.T) {
 	ledger, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err, "could not open ledger")
 	defer ledger.Close()
+	setupTestWeightOracle(ledger)
 
 	stallingTracker := &producePrepareBlockingTracker{
 		// produceEntryLock:         make(chan struct{}, 10),
@@ -362,6 +363,7 @@ func TestTrackers_CommitRoundIOError(t *testing.T) {
 	ledger, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err, "could not open ledger")
 	defer ledger.Close()
+	setupTestWeightOracle(ledger)
 
 	// flip the flag when the exit handler is called,
 	// which happens when Fatal logging is called
@@ -409,6 +411,7 @@ func TestTrackers_BusyCommitting(t *testing.T) {
 	ledger, err := OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	a.NoError(err)
 	defer ledger.Close()
+	setupTestWeightOracle(ledger)
 
 	// quit the commitSyncer goroutine
 	ledger.trackers.ctxCancel()

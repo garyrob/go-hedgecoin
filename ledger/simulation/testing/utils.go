@@ -39,6 +39,49 @@ import (
 	"github.com/algorand/go-algorand/protocol"
 )
 
+// mockSimulationWeightOracle is a mock implementation of WeightOracle for simulation tests.
+// It returns account stake as weight (simple passthrough behavior for testing).
+type mockSimulationWeightOracle struct {
+	ledger *ledger.Ledger
+}
+
+func (m *mockSimulationWeightOracle) Weight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	// Return the account's stake as weight for testing purposes.
+	// If the account has zero stake or doesn't exist, return a default weight of 1
+	// to avoid invariant violations in block evaluation. In production, the daemon
+	// would only return 0 for accounts that truly have no weight.
+	acctData, _, _, _ := m.ledger.LookupLatest(addr)
+	if acctData.MicroAlgos.Raw == 0 {
+		// Account has zero stake or doesn't exist - return a default weight
+		return 1, nil
+	}
+	return acctData.MicroAlgos.Raw, nil
+}
+
+func (m *mockSimulationWeightOracle) TotalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	// Return the online circulation as total weight for testing purposes
+	circulation, err := m.ledger.OnlineCirculation(balanceRound, voteRound)
+	if err != nil {
+		return 0, err
+	}
+	return circulation.Raw, nil
+}
+
+func (m *mockSimulationWeightOracle) Ping() error {
+	return nil
+}
+
+func (m *mockSimulationWeightOracle) Identity() (ledgercore.DaemonIdentity, error) {
+	return ledgercore.DaemonIdentity{
+		GenesisHash:            m.ledger.GenesisHash(),
+		WeightAlgorithmVersion: "1.0",
+		WeightProtocolVersion:  "1.0",
+	}, nil
+}
+
+// Compile-time check that mockSimulationWeightOracle implements WeightOracle
+var _ ledgercore.WeightOracle = (*mockSimulationWeightOracle)(nil)
+
 // Account contains public and private keys, as well as the state of an account
 type Account struct {
 	Addr     basics.Address
@@ -250,6 +293,11 @@ func PrepareSimulatorTest(t *testing.T) Environment {
 	log.SetLevel(logging.Warn)
 	realLedger, err := ledger.OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err, "could not open ledger")
+
+	// Set up mock weight oracle for simulation tests
+	// This is needed because ExternalWeight/TotalExternalWeight panic without an oracle
+	mockOracle := &mockSimulationWeightOracle{ledger: realLedger}
+	realLedger.SetWeightOracle(mockOracle)
 
 	ledger := &data.Ledger{Ledger: realLedger}
 

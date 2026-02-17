@@ -79,6 +79,7 @@ func TestPutBlockTooOld(t *testing.T) {
 	l, err := OpenLedger(logging.Base(), dbName, inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	blk := bookkeeping.Block{}
 	var cert agreement.Certificate
@@ -108,6 +109,7 @@ func TestGetEncodedBlockCert(t *testing.T) {
 	l, err := OpenLedger(logging.Base(), t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err)
 	defer l.Close()
+	setupTestWeightOracle(l)
 
 	blkent := randomBlock(1)
 	blk := blkent.block

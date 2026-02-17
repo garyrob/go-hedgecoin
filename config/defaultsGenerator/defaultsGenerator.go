@@ -146,6 +146,8 @@ func prettyPrint(c config.Local, format string) (out string) {
 			} else {
 				out = fmt.Sprintf("%s    \"%s\": %d,\n", out, field.Name, v)
 			}
+		case reflect.Uint16:
+			fallthrough
 		case reflect.Uint32:
 			fallthrough
 		case reflect.Uint:
