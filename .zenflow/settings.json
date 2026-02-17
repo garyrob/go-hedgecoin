@@ -1,5 +1,5 @@
 {
-  "setup_script": "go mod download",
+  "setup_script": "go mod download && make libsodium",
   "verification_script": "make lint",
   "copy_files": [
     "CLAUDE.local.md",
