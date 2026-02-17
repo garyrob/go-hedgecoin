@@ -170,3 +170,9 @@ Ledger uses independent state machines that can rebuild from blockchain events, 
 - Consensus parameters support versioning for upgrades
 - Backward compatibility maintained through careful interface design
 - Feature flags and gradual rollout mechanisms
+
+## Zenflow Configuration Notes
+
+The `.zenflow/settings.json` includes `*.md` and `docs/*.md` in `copy_files`. This is intentional and should NOT be removed, even though these files are tracked in git.
+
+**Reason**: When Zenflow creates a new worktree and processes task descriptions, agents cannot find documentation files referenced in task instructions (e.g., "read AGENTS.md before implementing") unless they are explicitly copied. The worktree setup timing means these files may not be available when Zenflow parses task instructions.
