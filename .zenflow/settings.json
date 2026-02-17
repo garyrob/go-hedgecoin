@@ -1,0 +1,4 @@
+{
+  "setup_script": "go mod download",
+  "verification_script": "make lint"
+}
