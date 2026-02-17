@@ -75,9 +75,17 @@ Update README to document:
 
 ---
 
-### [ ] Step: Final Report
+### [x] Step: Final Report
+<!-- chat-id: 183f68da-5d1f-418d-a7d4-fc3783a5a372 -->
 
 Write report to `report.md` describing:
 - What was implemented
 - How the solution was tested
 - Key findings about relay node requirements
+
+**Completed**: Created `report.md` with:
+- Summary of both implemented changes
+- Detailed explanation of the configurable test duration feature
+- Documentation of relay node weight daemon investigation and findings
+- List of modified files
+- Key architectural insights about weighted consensus
