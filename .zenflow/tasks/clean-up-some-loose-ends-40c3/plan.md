@@ -55,7 +55,8 @@ WEIGHT_TEST_DURATION=2m go test -v ./test/e2e-go/features/weightoracle -run Test
 
 ---
 
-### [ ] Step: Update Documentation
+### [x] Step: Update Documentation
+<!-- chat-id: 9baefdd9-5734-4b89-9c0a-3d30435c3352 -->
 
 Update README to document:
 1. Why relay nodes need weight daemon (credential validation, not "protocol compliance")
@@ -64,6 +65,13 @@ Update README to document:
 
 **Files**:
 - `test/e2e-go/features/weightoracle/README.md`
+
+**Completed**: Updated README.md with:
+- Changed "protocol compliance" to "credential validation" in test overview and architecture diagram
+- Added new "Why Relay Nodes Need Weight Daemons" section explaining the three reasons (credential validation, block evaluation, message routing)
+- Added "Custom Test Duration" section documenting `WEIGHT_TEST_DURATION` environment variable
+- Added examples for 2-minute smoke test, 15-minute moderate test, and 2-hour extended test
+- Documented checkpoint behavior for different durations
 
 ---
 

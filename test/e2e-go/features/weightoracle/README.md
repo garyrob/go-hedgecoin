@@ -5,7 +5,7 @@ This directory contains end-to-end tests for the external weight oracle feature,
 ## Test Overview
 
 The main test (`weighted_consensus_test.go`) runs a 6-node network where:
-- 1 relay node provides network connectivity (with weight daemon for protocol compliance)
+- 1 relay node provides network connectivity (with weight daemon for credential validation)
 - 4 participating nodes have weight 1.0 (1,000,000 microalgos supplied by their weight daemon)
 - 1 participating node has weight 1.5 (1,500,000 microalgos supplied by its weight daemon)
 
@@ -18,7 +18,7 @@ The test verifies that over time, the node with weight 1.5 proposes approximatel
 +--------------------------------------------------------------------------+
 |                                                                           |
 |   +------------+                                                          |
-|   |   Relay    |  (with weight daemon for protocol compliance)            |
+|   |   Relay    |  (with weight daemon for credential validation)          |
 |   +------------+                                                          |
 |         |                                                                 |
 |    +----+----+----+----+----+                                             |
@@ -54,7 +54,38 @@ go test -v ./test/e2e-go/features/weightoracle/... -run TestWeightedConsensus -t
 
 # Short version (5 minutes only)
 go test -v ./test/e2e-go/features/weightoracle/... -run TestWeightedConsensus -short -timeout 10m
+
+# Custom duration via environment variable
+WEIGHT_TEST_DURATION=15m go test -v ./test/e2e-go/features/weightoracle/... -run TestWeightedConsensus -timeout 20m
 ```
+
+### Custom Test Duration
+
+The test duration can be configured using the `WEIGHT_TEST_DURATION` environment variable. This is useful for:
+- Quick verification runs (2-5 minutes)
+- Extended stability testing (multiple hours)
+- CI pipeline optimization
+
+**Format**: Any valid Go duration string (e.g., `2m`, `15m`, `2h30m`)
+
+**Priority**:
+1. `WEIGHT_TEST_DURATION` environment variable (if set and valid)
+2. `-short` flag (5 minutes)
+3. Default (60 minutes)
+
+**Examples**:
+```bash
+# Quick 2-minute smoke test
+WEIGHT_TEST_DURATION=2m go test -v ./test/e2e-go/features/weightoracle/... -run TestWeightedConsensus -timeout 5m
+
+# 15-minute moderate test
+WEIGHT_TEST_DURATION=15m go test -v ./test/e2e-go/features/weightoracle/... -run TestWeightedConsensus -timeout 20m
+
+# 2-hour extended stability test
+WEIGHT_TEST_DURATION=2h go test -v ./test/e2e-go/features/weightoracle/... -run TestWeightedConsensus -timeout 130m
+```
+
+**Checkpoint behavior**: For durations ≤5 minutes, a single checkpoint is recorded at the end. For longer durations, checkpoints are recorded at 5 minutes, 10 minutes, then every 10 minutes thereafter, plus a final checkpoint at the total duration.
 
 ## Test Results
 
@@ -88,6 +119,18 @@ The full test demonstrates the weighted consensus feature converging toward the 
 The ratio starts higher due to statistical variance and converges toward the expected 1.5 as more rounds complete.
 
 ## Implementation Notes
+
+### Why Relay Nodes Need Weight Daemons
+
+Although relay nodes don't participate in consensus (they have no participation keys and don't propose blocks or vote), they still require a weight daemon. This is because:
+
+1. **Credential Validation**: Relay nodes run the agreement service and validate incoming consensus messages (votes and proposals) from participating nodes. Credential verification uses `ExternalWeight` to compute committee membership.
+
+2. **Block Evaluation**: The ledger's block evaluation logic uses `TotalExternalWeight` when handling absent online account lists.
+
+3. **Message Routing**: Before relaying consensus messages, the relay verifies that the sender's credentials are valid, which requires knowing their weight.
+
+Without a weight daemon, relay nodes cannot validate the consensus messages they receive and relay. The current architecture requires all nodes in a weighted consensus network to have access to a weight oracle.
 
 ### Shared Address Weights
 
