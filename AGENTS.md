@@ -176,3 +176,53 @@ Ledger uses independent state machines that can rebuild from blockchain events, 
 The `.zenflow/settings.json` includes `*.md` and `docs/*.md` in `copy_files`. This is intentional and should NOT be removed, even though these files are tracked in git.
 
 **Reason**: When Zenflow creates a new worktree and processes task descriptions, agents cannot find documentation files referenced in task instructions (e.g., "read AGENTS.md before implementing") unless they are explicitly copied. The worktree setup timing means these files may not be available when Zenflow parses task instructions.
+
+## Weighted Consensus Test (External Weight Oracle)
+
+### Overview
+This project includes an E2E test for weighted consensus using an external weight oracle. The test verifies that nodes with higher weights propose proportionally more blocks.
+
+### Test Configuration
+- 5 participating nodes + 1 relay node
+- 4 nodes with weight 1.0, 1 node (Node5) with weight 1.5
+- Each node connects to a Python weight daemon via TCP
+- Uses `ConsensusFuture` protocol (has external weight oracle support)
+- Default test duration: 60 minutes
+
+### Key Files
+- **Test**: `test/e2e-go/features/weightoracle/weighted_consensus_test.go`
+- **Weight Daemon**: `node/weightoracle/testdaemon/daemon.py`
+- **Network Template**: `test/testdata/nettemplates/FiveNodesWeighted.json`
+- **Documentation**: `test/e2e-go/features/weightoracle/README.md`
+
+### Running the Test
+```bash
+cd /Users/garyrob/Source/go-hedgecoin
+
+# Build first (if needed)
+make install
+
+# Run the test
+export NODEBINDIR=~/go/bin
+export TESTDATADIR=$(pwd)/test/testdata
+export TESTDIR=/tmp
+go test ./test/e2e-go/features/weightoracle -run TestWeightedConsensus -v -timeout=70m
+```
+
+### Adjusting Test Duration
+Modify `testDuration` in `weighted_consensus_test.go`:
+```go
+testDuration = 120 * time.Minute  // Example: 2 hours
+```
+Then run with timeout longer than the duration (e.g., `-timeout=130m`).
+
+### Critical Implementation Detail
+**All weight daemons must share the same `address_weights.json` file.** This ensures all nodes have an identical view of every account's weight, which is required because credential verification uses the receiver's view of stake. Without this, consensus stalls with "credential has weight 0" errors.
+
+### Expected Results
+The weighted node (Node5) should propose approximately 1.5x more blocks than the average of normal nodes. In a 60-minute test, the ratio typically converges to ~1.5-1.6.
+
+### Troubleshooting
+- Kill leftover processes: `pkill -f "algod.*TestWeightedConsensus"; pkill -f "daemon.py"`
+- Check logs in `$TESTDIR/TestWeightedConsensus/*/node.log`
+- Ensure `$NODEBINDIR` contains freshly built binaries
