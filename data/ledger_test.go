@@ -45,6 +45,39 @@ import (
 var testPoolAddr = basics.Address{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 var testSinkAddr = basics.Address{0x2c, 0x2a, 0x6c, 0xe9, 0xa9, 0xa7, 0xc2, 0x8c, 0x22, 0x95, 0xfd, 0x32, 0x4f, 0x77, 0xa5, 0x4, 0x8b, 0x42, 0xc2, 0xb7, 0xa8, 0x54, 0x84, 0xb6, 0x80, 0xb1, 0xe1, 0x3d, 0x59, 0x9b, 0xeb, 0x36}
 
+// testWeightOracle is a mock WeightOracle that uses stake as weight.
+type testWeightOracle struct {
+	l *ledger.Ledger
+}
+
+func (m *testWeightOracle) Weight(balanceRound basics.Round, addr basics.Address, selectionID crypto.VRFVerifier) (uint64, error) {
+	acctData, _, _, _ := m.l.LookupLatest(addr)
+	if acctData.MicroAlgos.Raw == 0 {
+		return 1, nil
+	}
+	return acctData.MicroAlgos.Raw, nil
+}
+
+func (m *testWeightOracle) TotalWeight(balanceRound basics.Round, voteRound basics.Round) (uint64, error) {
+	circulation, err := m.l.OnlineCirculation(balanceRound, voteRound)
+	if err != nil {
+		return 0, err
+	}
+	return circulation.Raw, nil
+}
+
+func (m *testWeightOracle) Ping() error { return nil }
+
+func (m *testWeightOracle) Identity() (ledgercore.DaemonIdentity, error) {
+	return ledgercore.DaemonIdentity{
+		GenesisHash:            m.l.GenesisHash(),
+		WeightAlgorithmVersion: "1.0",
+		WeightProtocolVersion:  "1.0",
+	}, nil
+}
+
+var _ ledgercore.WeightOracle = (*testWeightOracle)(nil)
+
 func testGenerateInitState(tb testing.TB, proto protocol.ConsensusVersion) (genesisInitState ledgercore.InitState, initKeys map[basics.Address]*crypto.SignatureSecrets) {
 
 	var poolSecret, sinkSecret *crypto.SignatureSecrets
@@ -531,6 +564,7 @@ func TestLedgerErrorValidate(t *testing.T) {
 	realLedger, err := ledger.OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
 	require.NoError(t, err, "could not open ledger")
 	defer realLedger.Close()
+	realLedger.SetWeightOracle(&testWeightOracle{l: realLedger})
 
 	l := Ledger{Ledger: realLedger, log: log}
 	l.log.SetLevel(logging.Warn)
