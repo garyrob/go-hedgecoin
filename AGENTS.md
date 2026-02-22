@@ -185,9 +185,9 @@ This project includes an E2E test for weighted consensus using an external weigh
 ### Test Configuration
 - 5 participating nodes + 1 relay node
 - 4 nodes with weight 1.0, 1 node (Node5) with weight 1.5
-- Each node connects to a Python weight daemon via TCP
+- Each node connects to a Python weight daemon via HTTP REST
 - Uses `ConsensusFuture` protocol (has external weight oracle support)
-- Default test duration: 60 minutes
+- Default test duration: 1 minute (configurable via `WEIGHT_TEST_DURATION` env var)
 
 ### Key Files
 - **Test**: `test/e2e-go/features/weightoracle/weighted_consensus_test.go`
@@ -206,21 +206,22 @@ make install
 export NODEBINDIR=~/go/bin
 export TESTDATADIR=$(pwd)/test/testdata
 export TESTDIR=/tmp
-go test ./test/e2e-go/features/weightoracle -run TestWeightedConsensus -v -timeout=70m
+go test ./test/e2e-go/features/weightoracle -run TestWeightedConsensus -v -timeout=3m
 ```
 
 ### Adjusting Test Duration
-Modify `testDuration` in `weighted_consensus_test.go`:
-```go
-testDuration = 120 * time.Minute  // Example: 2 hours
+Set the `WEIGHT_TEST_DURATION` environment variable:
+```bash
+export WEIGHT_TEST_DURATION=60m
+go test ./test/e2e-go/features/weightoracle -run TestWeightedConsensus -v -timeout=70m
 ```
-Then run with timeout longer than the duration (e.g., `-timeout=130m`).
+Then run with timeout longer than the duration.
 
 ### Critical Implementation Detail
 **All weight daemons must share the same `address_weights.json` file.** This ensures all nodes have an identical view of every account's weight, which is required because credential verification uses the receiver's view of stake. Without this, consensus stalls with "credential has weight 0" errors.
 
 ### Expected Results
-The weighted node (Node5) should propose approximately 1.5x more blocks than the average of normal nodes. In a 60-minute test, the ratio typically converges to ~1.5-1.6.
+The weighted node (Node5) should propose approximately 1.5x more blocks than the average of normal nodes. In longer tests (e.g., 60 minutes), the ratio typically converges to ~1.5-1.6.
 
 ### Troubleshooting
 - Kill leftover processes: `pkill -f "algod.*TestWeightedConsensus"; pkill -f "daemon.py"`
