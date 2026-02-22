@@ -53,7 +53,8 @@ Update both together since they must match:
 
 ---
 
-### [ ] Step: Update Python Daemon
+### [x] Step: Update Python Daemon
+<!-- chat-id: a2117db3-7f81-4574-adcc-ea52e6a944a1 -->
 
 Modify `node/weightoracle/testdaemon/daemon.py`:
 - Replace `socket` server with `http.server.HTTPServer`
@@ -62,6 +63,15 @@ Modify `node/weightoracle/testdaemon/daemon.py`:
 - Always return JSON for errors (not HTML)
 - Use `HTTPServer.shutdown()` for graceful termination
 - Manual test with `curl`
+
+**Completed:**
+- Replaced raw TCP socket server with `http.server.HTTPServer`
+- Created `WeightDaemonHandler` class extending `BaseHTTPRequestHandler`
+- Implemented `do_POST()` method that routes by URL path (`/ping`, `/identity`, `/weight`, `/total_weight`)
+- All error responses return JSON (not HTML)
+- Using `HTTPServer.shutdown()` for graceful termination
+- Manual tests with curl verify all endpoints work correctly
+- Go unit tests pass (59 tests)
 
 ---
 
