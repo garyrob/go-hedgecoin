@@ -72,52 +72,50 @@ Weight table format:
 
 Key format: `address:selection_id:balance_round`
 
-## Wire Protocol
+## HTTP REST Protocol
 
-The daemon implements the weight oracle wire protocol:
+The daemon implements the weight oracle protocol over HTTP REST.
 
-### Requests
+### Endpoints
 
-Each request is a single JSON object sent over TCP:
+All endpoints accept POST requests with JSON body and return JSON responses.
 
-| Type | Format |
-|------|--------|
-| ping | `{"type":"ping"}` |
-| identity | `{"type":"identity"}` |
-| weight | `{"type":"weight","address":"<base32>","selection_id":"<hex>","balance_round":"<decimal>"}` |
-| total_weight | `{"type":"total_weight","balance_round":"<decimal>","vote_round":"<decimal>"}` |
+| Endpoint | Request Body | Success Response |
+|----------|--------------|------------------|
+| `POST /ping` | `{}` | `{"pong":true}` |
+| `POST /identity` | `{}` | `{"genesis_hash":"<base64>","protocol_version":"<str>","algorithm_version":"<str>"}` |
+| `POST /weight` | `{"address":"<base32>","selection_id":"<hex>","balance_round":"<decimal>"}` | `{"weight":"<decimal>"}` |
+| `POST /total_weight` | `{"balance_round":"<decimal>","vote_round":"<decimal>"}` | `{"total_weight":"<decimal>"}` |
 
-### Responses
+### Error Response
 
-| Type | Success Response |
-|------|------------------|
-| ping | `{"pong":true}` |
-| identity | `{"genesis_hash":"<base64>","protocol_version":"<str>","algorithm_version":"<str>"}` |
-| weight | `{"weight":"<decimal>"}` |
-| total_weight | `{"total_weight":"<decimal>"}` |
-
-Error response (for any type):
+All errors return JSON (never HTML):
 
 ```json
 {"error":"<message>","code":"<code>"}
 ```
 
-Error codes: `not_found`, `bad_request`, `internal`, `unsupported`
+Error codes and HTTP status:
+- `bad_request` (400): Invalid JSON or missing required fields
+- `not_found` (404): Unknown endpoint
+- `internal` (500): Internal server error
 
-## Testing with netcat
+## Testing with curl
 
 ```bash
 # Ping
-echo '{"type":"ping"}' | nc localhost 9876
+curl -X POST http://localhost:9876/ping -H "Content-Type: application/json" -d '{}'
 
 # Identity
-echo '{"type":"identity"}' | nc localhost 9876
+curl -X POST http://localhost:9876/identity -H "Content-Type: application/json" -d '{}'
 
 # Weight query
-echo '{"type":"weight","address":"ABC123","selection_id":"0123456789abcdef","balance_round":"100"}' | nc localhost 9876
+curl -X POST http://localhost:9876/weight -H "Content-Type: application/json" \
+    -d '{"address":"ABC123","selection_id":"0123456789abcdef","balance_round":"100"}'
 
 # Total weight query
-echo '{"type":"total_weight","balance_round":"100","vote_round":"105"}' | nc localhost 9876
+curl -X POST http://localhost:9876/total_weight -H "Content-Type: application/json" \
+    -d '{"balance_round":"100","vote_round":"105"}'
 ```
 
 ## Testing with the Go Client

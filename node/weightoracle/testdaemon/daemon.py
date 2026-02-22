@@ -47,7 +47,7 @@ Success responses:
 Error response (any endpoint):
     {"error":"<message>","code":"<code>"}
     HTTP Status: 400 (bad_request), 404 (not_found), 500 (internal)
-    Codes: "not_found", "bad_request", "internal", "unsupported"
+    Codes: "not_found", "bad_request", "internal"
 """
 
 import argparse
@@ -141,7 +141,7 @@ class WeightDaemon:
         Initialize the mock daemon.
 
         Args:
-            port: TCP port to listen on
+            port: Port to listen on for HTTP requests
             genesis_hash: 32-byte genesis hash (will be base64 encoded in responses)
             protocol_version: Weight protocol version string
             algorithm_version: Weight algorithm version string
