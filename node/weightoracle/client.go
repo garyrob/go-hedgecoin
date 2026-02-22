@@ -17,11 +17,15 @@
 package weightoracle
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -60,10 +64,10 @@ type totalWeightCacheKey struct {
 }
 
 // Client implements ledgercore.WeightOracle by communicating with an external
-// weight daemon over TCP/JSON.
+// weight daemon over HTTP REST.
 type Client struct {
-	port         uint16
-	dialTimeout  time.Duration
+	baseURL      string
+	httpClient   *http.Client
 	queryTimeout time.Duration
 
 	// weightCache caches weight query results to reduce daemon queries.
@@ -82,29 +86,38 @@ var _ ledgercore.WeightOracle = (*Client)(nil)
 // at 127.0.0.1 on the specified port.
 func NewClient(port uint16) *Client {
 	return &Client{
-		port:             port,
-		dialTimeout:      DefaultDialTimeout,
+		baseURL: fmt.Sprintf("http://127.0.0.1:%d", port),
+		httpClient: &http.Client{
+			// Note: Timeout is not set here; we use per-request context for dynamic timeouts
+			Transport: &http.Transport{
+				MaxIdleConns:        10,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+				DialContext: (&net.Dialer{
+					Timeout: DefaultDialTimeout,
+				}).DialContext,
+			},
+		},
 		queryTimeout:     DefaultQueryTimeout,
 		weightCache:      newLRUCache[weightCacheKey, uint64](WeightCacheCapacity),
 		totalWeightCache: newLRUCache[totalWeightCacheKey, uint64](TotalWeightCacheCapacity),
 	}
 }
 
-// SetTimeouts configures custom dial and query timeouts for the client.
+// SetTimeouts configures custom query timeout for the client.
 // This is primarily intended for testing. Pass 0 to keep the current value.
+// Note: dialTimeout parameter is accepted for backward compatibility but has no effect
+// after client creation since it's baked into the HTTP Transport.
 func (c *Client) SetTimeouts(dialTimeout, queryTimeout time.Duration) {
-	if dialTimeout > 0 {
-		c.dialTimeout = dialTimeout
-	}
+	// dialTimeout is ignored - it's fixed at construction time in the Transport
+	_ = dialTimeout
 	if queryTimeout > 0 {
 		c.queryTimeout = queryTimeout
 	}
 }
 
-// request is the JSON structure sent to the daemon.
-type request struct {
-	Type string `json:"type"`
-}
+// emptyRequest is used for endpoints that don't require request parameters.
+type emptyRequest struct{}
 
 // pingResponse is the expected response from a ping query.
 type pingResponse struct {
@@ -114,8 +127,8 @@ type pingResponse struct {
 }
 
 // weightRequest is the JSON structure sent for a weight query.
+// The endpoint path (/weight) identifies the request type.
 type weightRequest struct {
-	Type         string `json:"type"`
 	Address      string `json:"address"`
 	SelectionID  string `json:"selection_id"`
 	BalanceRound string `json:"balance_round"`
@@ -129,8 +142,8 @@ type weightResponse struct {
 }
 
 // totalWeightRequest is the JSON structure sent for a total_weight query.
+// The endpoint path (/total_weight) identifies the request type.
 type totalWeightRequest struct {
-	Type         string `json:"type"`
 	BalanceRound string `json:"balance_round"`
 	VoteRound    string `json:"vote_round"`
 }
@@ -151,34 +164,58 @@ type identityResponse struct {
 	Code             string `json:"code,omitempty"`
 }
 
-// query sends a request to the daemon and decodes the response.
-// It opens a new TCP connection for each request (no connection pooling).
+// doRequest sends an HTTP POST request to the daemon and decodes the response.
+// It uses Go's http.Client which maintains a connection pool for efficiency.
 // The response is decoded into the provided result struct.
-func (c *Client) query(req interface{}, result interface{}) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", c.port)
-
-	// Dial with timeout
-	conn, err := net.DialTimeout("tcp", addr, c.dialTimeout)
+func (c *Client) doRequest(endpoint string, reqBody interface{}, result interface{}) error {
+	// Marshal request body
+	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("failed to connect to weight daemon at %s: %w", addr, err)
-	}
-	defer conn.Close()
-
-	// Set deadline for the entire query
-	if err := conn.SetDeadline(time.Now().Add(c.queryTimeout)); err != nil {
-		return fmt.Errorf("failed to set connection deadline: %w", err)
+		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Encode and send request
-	encoder := json.NewEncoder(conn)
-	if err := encoder.Encode(req); err != nil {
-		return fmt.Errorf("failed to send request to weight daemon: %w", err)
-	}
+	// Create HTTP request with timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), c.queryTimeout)
+	defer cancel()
 
-	// Read and decode response
-	decoder := json.NewDecoder(conn)
-	if err := decoder.Decode(result); err != nil {
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to connect to weight daemon: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read full body to enable connection reuse (even for errors)
+	bodyData, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return fmt.Errorf("failed to read response from weight daemon: %w", err)
+	}
+
+	// Handle non-2xx status codes
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Try to parse JSON error from body
+		var errResp struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		if json.Unmarshal(bodyData, &errResp) == nil && errResp.Error != "" {
+			return &ledgercore.DaemonError{
+				Code: errResp.Code,
+				Msg:  errResp.Error,
+			}
+		}
+		return fmt.Errorf("HTTP error %d: %s", resp.StatusCode, string(bodyData))
+	}
+
+	// Decode successful response
+	if err := json.Unmarshal(bodyData, result); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return nil
@@ -186,10 +223,10 @@ func (c *Client) query(req interface{}, result interface{}) error {
 
 // Ping checks if the daemon is reachable and healthy.
 func (c *Client) Ping() error {
-	req := request{Type: "ping"}
+	req := emptyRequest{}
 	var resp pingResponse
 
-	if err := c.query(req, &resp); err != nil {
+	if err := c.doRequest("/ping", req, &resp); err != nil {
 		return err
 	}
 
@@ -227,14 +264,13 @@ func (c *Client) Weight(balanceRound basics.Round, addr basics.Address, selectio
 	// - selection_id: hex-encoded (32 bytes = 64 hex chars)
 	// - balance_round: decimal string
 	req := weightRequest{
-		Type:         "weight",
 		Address:      addr.String(),
 		SelectionID:  hex.EncodeToString(selectionID[:]),
 		BalanceRound: strconv.FormatUint(uint64(balanceRound), 10),
 	}
 
 	var resp weightResponse
-	if err := c.query(req, &resp); err != nil {
+	if err := c.doRequest("/weight", req, &resp); err != nil {
 		return 0, err
 	}
 
@@ -277,13 +313,12 @@ func (c *Client) TotalWeight(balanceRound basics.Round, voteRound basics.Round) 
 	// - balance_round: decimal string
 	// - vote_round: decimal string
 	req := totalWeightRequest{
-		Type:         "total_weight",
 		BalanceRound: strconv.FormatUint(uint64(balanceRound), 10),
 		VoteRound:    strconv.FormatUint(uint64(voteRound), 10),
 	}
 
 	var resp totalWeightResponse
-	if err := c.query(req, &resp); err != nil {
+	if err := c.doRequest("/total_weight", req, &resp); err != nil {
 		return 0, err
 	}
 
@@ -313,10 +348,10 @@ func (c *Client) TotalWeight(balanceRound basics.Round, voteRound basics.Round) 
 // Identity returns metadata about the daemon including genesis hash and version information.
 // The genesis hash is returned as base64-encoded in the wire protocol and decoded to a crypto.Digest.
 func (c *Client) Identity() (ledgercore.DaemonIdentity, error) {
-	req := request{Type: "identity"}
+	req := emptyRequest{}
 	var resp identityResponse
 
-	if err := c.query(req, &resp); err != nil {
+	if err := c.doRequest("/identity", req, &resp); err != nil {
 		return ledgercore.DaemonIdentity{}, err
 	}
 

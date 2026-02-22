@@ -16,41 +16,110 @@
 # along with go-algorand.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-Mock Weight Oracle Daemon for Testing
+Mock Weight Oracle Daemon for Testing (HTTP REST version)
 
-A minimal TCP server that simulates the weight oracle daemon for integration testing.
+A minimal HTTP server that simulates the weight oracle daemon for integration testing.
 Supports configurable responses for weight, total_weight, ping, and identity queries.
 
-Wire Protocol:
-- Each request is a single JSON object sent over TCP
-- The daemon replies with a single JSON object and closes the connection
-- Numeric values are decimal strings (not JSON numbers)
+HTTP REST Protocol:
+- All requests are HTTP POST with JSON body
+- The endpoint path determines the request type
+- Responses are always JSON
+
+Endpoints:
+    POST /ping         - Health check
+    POST /identity     - Get daemon identity
+    POST /weight       - Query individual account weight
+    POST /total_weight - Query total network weight
 
 Request formats:
-    ping:         {"type":"ping"}
-    identity:     {"type":"identity"}
-    weight:       {"type":"weight","address":"<base32>","selection_id":"<hex>","balance_round":"<decimal>"}
-    total_weight: {"type":"total_weight","balance_round":"<decimal>","vote_round":"<decimal>"}
+    /ping:         {} (empty body)
+    /identity:     {} (empty body)
+    /weight:       {"address":"<base32>","selection_id":"<hex>","balance_round":"<decimal>"}
+    /total_weight: {"balance_round":"<decimal>","vote_round":"<decimal>"}
 
 Success responses:
-    ping:         {"pong":true}
-    identity:     {"genesis_hash":"<base64>","protocol_version":"<str>","algorithm_version":"<str>"}
-    weight:       {"weight":"<decimal>"}
-    total_weight: {"total_weight":"<decimal>"}
+    /ping:         {"pong":true}
+    /identity:     {"genesis_hash":"<base64>","protocol_version":"<str>","algorithm_version":"<str>"}
+    /weight:       {"weight":"<decimal>"}
+    /total_weight: {"total_weight":"<decimal>"}
 
-Error response:
+Error response (any endpoint):
     {"error":"<message>","code":"<code>"}
-    Codes: "not_found", "bad_request", "internal", "unsupported"
+    HTTP Status: 400 (bad_request), 404 (not_found), 500 (internal)
+    Codes: "not_found", "bad_request", "internal"
 """
 
 import argparse
 import base64
 import json
-import socket
 import sys
 import threading
 import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
+
+
+class WeightDaemonHandler(BaseHTTPRequestHandler):
+    """HTTP request handler for the weight daemon."""
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Suppress default HTTP logging to stderr."""
+        pass
+
+    def _send_json_response(self, status_code: int, response: dict[str, Any]) -> None:
+        """Send a JSON response with the given status code."""
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode("utf-8"))
+
+    def _send_json_error(self, status_code: int, message: str, code: str) -> None:
+        """Send a JSON error response (always JSON, not HTML)."""
+        self._send_json_response(status_code, {"error": message, "code": code})
+
+    def do_POST(self) -> None:
+        """Handle POST requests by routing to the appropriate handler."""
+        # Apply latency if configured
+        daemon = self.server.daemon  # type: ignore[attr-defined]
+        if daemon.latency > 0:
+            time.sleep(daemon.latency)
+
+        # Read request body
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            request = json.loads(body) if body else {}
+        except json.JSONDecodeError as e:
+            self._send_json_error(400, f"Invalid JSON: {e}", "bad_request")
+            return
+
+        # Route to handler based on path
+        if self.path == "/ping":
+            response = daemon._handle_ping()
+        elif self.path == "/identity":
+            response = daemon._handle_identity()
+        elif self.path == "/weight":
+            response = daemon._handle_weight(request)
+        elif self.path == "/total_weight":
+            response = daemon._handle_total_weight(request)
+        else:
+            self._send_json_error(404, f"Unknown endpoint: {self.path}", "not_found")
+            return
+
+        # Check if handler returned an error response
+        if "error" in response:
+            code = response.get("code", "internal")
+            if code == "bad_request":
+                status = 400
+            elif code == "not_found":
+                status = 404
+            else:
+                status = 500
+            self._send_json_response(status, response)
+        else:
+            self._send_json_response(200, response)
 
 
 class WeightDaemon:
@@ -72,7 +141,7 @@ class WeightDaemon:
         Initialize the mock daemon.
 
         Args:
-            port: TCP port to listen on
+            port: Port to listen on for HTTP requests
             genesis_hash: 32-byte genesis hash (will be base64 encoded in responses)
             protocol_version: Weight protocol version string
             algorithm_version: Weight algorithm version string
@@ -91,105 +160,20 @@ class WeightDaemon:
         self.total_weight = total_weight
         self.default_weight = default_weight
         self.address_weights = address_weights or {}
-        self.running = False
-        self.server_socket: socket.socket | None = None
         self._lock = threading.Lock()
+        self.server: HTTPServer | None = None
 
     def start(self) -> None:
         """Start the daemon server."""
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(("127.0.0.1", self.port))
-        self.server_socket.listen(10)
-        self.running = True
-
-        print(f"Weight daemon listening on 127.0.0.1:{self.port}", file=sys.stderr)
-
-        while self.running:
-            try:
-                self.server_socket.settimeout(1.0)  # Allow periodic check of running flag
-                try:
-                    client_socket, addr = self.server_socket.accept()
-                except socket.timeout:
-                    continue
-
-                # Handle each connection in a new thread
-                thread = threading.Thread(
-                    target=self._handle_client, args=(client_socket,), daemon=True
-                )
-                thread.start()
-
-            except Exception as e:
-                if self.running:
-                    print(f"Error accepting connection: {e}", file=sys.stderr)
+        self.server = HTTPServer(("127.0.0.1", self.port), WeightDaemonHandler)
+        self.server.daemon = self  # type: ignore[attr-defined]
+        print(f"Weight daemon listening on http://127.0.0.1:{self.port}", file=sys.stderr)
+        self.server.serve_forever()
 
     def stop(self) -> None:
-        """Stop the daemon server."""
-        self.running = False
-        if self.server_socket:
-            self.server_socket.close()
-
-    def _handle_client(self, client_socket: socket.socket) -> None:
-        """Handle a single client connection."""
-        try:
-            # Apply latency if configured
-            if self.latency > 0:
-                time.sleep(self.latency)
-
-            # Read the request
-            data = b""
-            while True:
-                chunk = client_socket.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-                # JSON objects end with } so we can detect end of message
-                if b"}" in data:
-                    break
-
-            if not data:
-                return
-
-            # Parse and handle the request
-            try:
-                request = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError as e:
-                response = {"error": f"Invalid JSON: {e}", "code": "bad_request"}
-                self._send_response(client_socket, response)
-                return
-
-            response = self._handle_request(request)
-            self._send_response(client_socket, response)
-
-        except Exception as e:
-            print(f"Error handling client: {e}", file=sys.stderr)
-        finally:
-            client_socket.close()
-
-    def _send_response(
-        self, client_socket: socket.socket, response: dict[str, Any]
-    ) -> None:
-        """Send a JSON response to the client."""
-        try:
-            response_json = json.dumps(response) + "\n"
-            client_socket.sendall(response_json.encode("utf-8"))
-        except Exception as e:
-            print(f"Error sending response: {e}", file=sys.stderr)
-
-    def _handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Handle a request and return the appropriate response."""
-        req_type = request.get("type", "")
-
-        if req_type == "ping":
-            return self._handle_ping()
-        elif req_type == "identity":
-            return self._handle_identity()
-        elif req_type == "weight":
-            return self._handle_weight(request)
-        elif req_type == "total_weight":
-            return self._handle_total_weight(request)
-        else:
-            return {"error": f"Unknown request type: {req_type}", "code": "unsupported"}
+        """Stop the daemon server gracefully."""
+        if self.server:
+            self.server.shutdown()
 
     def _handle_ping(self) -> dict[str, Any]:
         """Handle a ping request."""
@@ -320,7 +304,7 @@ def parse_genesis_hash(genesis_hash_str: str) -> bytes:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Mock Weight Oracle Daemon for Testing",
+        description="Mock Weight Oracle Daemon for Testing (HTTP REST)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -339,9 +323,10 @@ Examples:
     # Start with fixed weight for all queries (useful for testing weighted consensus)
     python daemon.py --port 9876 --default-weight 1000000 --total-weight 5500000
 
-    # Test with netcat
-    echo '{"type":"ping"}' | nc localhost 9876
-    echo '{"type":"identity"}' | nc localhost 9876
+    # Test with curl
+    curl -X POST http://localhost:9876/ping -H "Content-Type: application/json" -d '{}'
+    curl -X POST http://localhost:9876/identity -H "Content-Type: application/json" -d '{}'
+    curl -X POST http://localhost:9876/weight -H "Content-Type: application/json" -d '{"address":"AAAA","selection_id":"00","balance_round":"100"}'
 """,
     )
 

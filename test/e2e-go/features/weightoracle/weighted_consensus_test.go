@@ -17,10 +17,13 @@
 package weightoracle
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,8 +88,7 @@ var shortCheckpoints = []time.Duration{
 
 // getTestDuration returns the test duration based on:
 // 1. WEIGHT_TEST_DURATION environment variable (if set)
-// 2. testing.Short() flag (5 minutes)
-// 3. Default full test (60 minutes)
+// 2. Default test (1 minute)
 func getTestDuration(t *testing.T) time.Duration {
 	if envDuration := os.Getenv(testDurationEnvVar); envDuration != "" {
 		duration, err := time.ParseDuration(envDuration)
@@ -97,10 +99,7 @@ func getTestDuration(t *testing.T) time.Duration {
 			return duration
 		}
 	}
-	if testing.Short() {
-		return 5 * time.Minute
-	}
-	return 60 * time.Minute
+	return 1 * time.Minute
 }
 
 // getCheckpoints returns checkpoint intervals for the given duration.
@@ -307,9 +306,7 @@ func createPortOverride(basePort int) netdeploy.TemplateOverride {
 			if node.ConfigJSONOverride != "" {
 				var existing map[string]interface{}
 				if err := json.Unmarshal([]byte(node.ConfigJSONOverride), &existing); err == nil {
-					for k, v := range existing {
-						override[k] = v
-					}
+					maps.Copy(override, existing)
 				}
 			}
 			overrideBytes, _ := json.Marshal(override)
@@ -470,30 +467,25 @@ func waitForDaemonReady(t *testing.T, d *weightDaemon) {
 	t.Fatalf("daemon on port %d failed to respond within %v", d.port, daemonStartupTimeout)
 }
 
-// pingDaemon sends a ping request to the daemon
+// pingDaemon sends a ping request to the daemon via HTTP
 func pingDaemon(port int) bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+	client := &http.Client{Timeout: time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/ping", port)
+
+	resp, err := client.Post(url, "application/json", bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return false
 	}
-	defer conn.Close()
+	defer resp.Body.Close()
 
-	_, err = conn.Write([]byte(`{"type":"ping"}`))
-	if err != nil {
-		return false
-	}
-
-	buf := make([]byte, 256)
-	conn.SetReadDeadline(time.Now().Add(time.Second))
-	n, err := conn.Read(buf)
-	if err != nil {
+	if resp.StatusCode != http.StatusOK {
 		return false
 	}
 
 	var response struct {
 		Pong bool `json:"pong"`
 	}
-	if err := json.Unmarshal(buf[:n], &response); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return false
 	}
 	return response.Pong

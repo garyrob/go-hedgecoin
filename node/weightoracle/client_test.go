@@ -20,7 +20,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,96 +31,86 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/algorand/go-deadlock"
-
 	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
-// testServer is a minimal TCP server for testing the weight oracle client.
-// It accepts connections, reads JSON requests, and responds with configurable responses.
+// testServer is an HTTP test server for testing the weight oracle client.
+// It handles POST requests and responds with configurable JSON responses.
 type testServer struct {
-	listener net.Listener
-	port     uint16
-	wg       sync.WaitGroup
-	mu       deadlock.Mutex
-	handler  func(req map[string]interface{}) interface{}
-	closed   bool
+	server *httptest.Server
+	port   uint16
+	// handler is called with the URL path and request body, returns response object
+	handler func(path string, req map[string]interface{}) interface{}
 }
 
-// newTestServer creates and starts a test TCP server on a random available port.
+// newTestServer creates and starts a test HTTP server on a random available port.
 // The handler function processes requests and returns response objects to be JSON-encoded.
+// For backward compatibility, if handler only takes req, we use a wrapper.
 func newTestServer(t *testing.T, handler func(req map[string]interface{}) interface{}) *testServer {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	addr := listener.Addr().(*net.TCPAddr)
-	s := &testServer{
-		listener: listener,
-		port:     uint16(addr.Port),
-		handler:  handler,
+	// Wrap the simple handler to work with the path-based handler
+	pathHandler := func(path string, req map[string]interface{}) interface{} {
+		return handler(req)
 	}
 
-	s.wg.Add(1)
-	go s.serve()
+	return newTestServerWithPath(t, pathHandler)
+}
+
+// newTestServerWithPath creates a test HTTP server where the handler receives the URL path.
+func newTestServerWithPath(t *testing.T, handler func(path string, req map[string]interface{}) interface{}) *testServer {
+	t.Helper()
+
+	s := &testServer{handler: handler}
+
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only handle POST requests
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Read request body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+
+		// Parse JSON request (empty body is ok for some endpoints)
+		var req map[string]interface{}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				http.Error(w, "Invalid JSON", http.StatusBadRequest)
+				return
+			}
+		} else {
+			req = make(map[string]interface{})
+		}
+
+		// Call handler with path
+		resp := s.handler(r.URL.Path, req)
+
+		// Write JSON response
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
+	}))
+
+	// Extract port from the test server URL
+	addr := s.server.Listener.Addr().(*net.TCPAddr)
+	s.port = uint16(addr.Port)
 
 	return s
 }
 
-// serve accepts connections and handles them in separate goroutines.
-func (s *testServer) serve() {
-	defer s.wg.Done()
-
-	for {
-		conn, err := s.listener.Accept()
-		if err != nil {
-			// Check if we're closing
-			s.mu.Lock()
-			closed := s.closed
-			s.mu.Unlock()
-			if closed {
-				return
-			}
-			continue
-		}
-
-		s.wg.Add(1)
-		go s.handleConn(conn)
-	}
-}
-
-// handleConn processes a single connection: reads a JSON request, calls the handler,
-// and writes the JSON response.
-func (s *testServer) handleConn(conn net.Conn) {
-	defer s.wg.Done()
-	defer conn.Close()
-
-	// Read request
-	var req map[string]interface{}
-	decoder := json.NewDecoder(conn)
-	if err := decoder.Decode(&req); err != nil {
-		return
-	}
-
-	// Call handler
-	resp := s.handler(req)
-
-	// Write response
-	encoder := json.NewEncoder(conn)
-	_ = encoder.Encode(resp)
-}
-
-// Close shuts down the test server and waits for all handlers to finish.
+// Close shuts down the test server.
 func (s *testServer) Close() {
-	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
-	s.listener.Close()
-	s.wg.Wait()
+	s.server.Close()
 }
 
 // TestPingSuccess tests that Ping returns nil on a successful pong response.
@@ -125,8 +118,8 @@ func TestPingSuccess(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "ping", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/ping", path)
 		return map[string]interface{}{
 			"pong": true,
 		}
@@ -144,8 +137,8 @@ func TestPingDaemonError(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "ping", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/ping", path)
 		return map[string]interface{}{
 			"error": "daemon is unhealthy",
 			"code":  "internal",
@@ -197,8 +190,8 @@ func TestPingMissingPong(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "ping", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/ping", path)
 		// Return a response without pong field
 		return map[string]interface{}{
 			"something": "else",
@@ -230,14 +223,15 @@ func TestPingPongFalse(t *testing.T) {
 	require.Contains(t, err.Error(), "pong")
 }
 
-// TestNewClient tests that NewClient correctly stores the port.
+// TestNewClient tests that NewClient correctly initializes the client.
 func TestNewClient(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
 	client := NewClient(12345)
 	require.NotNil(t, client)
-	require.Equal(t, uint16(12345), client.port)
+	require.Equal(t, "http://127.0.0.1:12345", client.baseURL)
+	require.NotNil(t, client.httpClient)
 }
 
 // TestPingConcurrent tests that multiple concurrent Ping requests work correctly.
@@ -276,82 +270,40 @@ func TestPingConcurrent(t *testing.T) {
 	}
 }
 
-// slowTestServer is a TCP server that accepts connections but delays before responding.
+// slowTestServer is an HTTP test server that delays before responding.
 // It's used to test timeout behavior.
 type slowTestServer struct {
-	listener net.Listener
-	port     uint16
-	delay    time.Duration
-	wg       sync.WaitGroup
-	mu       deadlock.Mutex
-	closed   bool
+	server *httptest.Server
+	port   uint16
+	delay  time.Duration
 }
 
 // newSlowTestServer creates a test server that delays the specified duration before responding.
 func newSlowTestServer(t *testing.T, delay time.Duration) *slowTestServer {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
+	s := &slowTestServer{delay: delay}
 
-	addr := listener.Addr().(*net.TCPAddr)
-	s := &slowTestServer{
-		listener: listener,
-		port:     uint16(addr.Port),
-		delay:    delay,
-	}
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read request body (to complete the request)
+		_, _ = io.ReadAll(r.Body)
 
-	s.wg.Add(1)
-	go s.serve()
+		// Delay before responding
+		time.Sleep(s.delay)
+
+		// Send response (might fail if client timed out)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"pong": true})
+	}))
+
+	addr := s.server.Listener.Addr().(*net.TCPAddr)
+	s.port = uint16(addr.Port)
 
 	return s
 }
 
-func (s *slowTestServer) serve() {
-	defer s.wg.Done()
-
-	for {
-		conn, err := s.listener.Accept()
-		if err != nil {
-			s.mu.Lock()
-			closed := s.closed
-			s.mu.Unlock()
-			if closed {
-				return
-			}
-			continue
-		}
-
-		s.wg.Add(1)
-		go s.handleConn(conn)
-	}
-}
-
-func (s *slowTestServer) handleConn(conn net.Conn) {
-	defer s.wg.Done()
-	defer conn.Close()
-
-	// Read request (to complete the send side)
-	var req map[string]interface{}
-	decoder := json.NewDecoder(conn)
-	if err := decoder.Decode(&req); err != nil {
-		return
-	}
-
-	// Delay before responding
-	time.Sleep(s.delay)
-
-	// Send response (might fail if client timed out and closed connection)
-	encoder := json.NewEncoder(conn)
-	_ = encoder.Encode(map[string]interface{}{"pong": true})
-}
-
 func (s *slowTestServer) Close() {
-	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
-	s.listener.Close()
-	s.wg.Wait()
+	s.server.Close()
 }
 
 // TestPingTimeout tests that Ping returns a timeout error when the daemon
@@ -370,7 +322,8 @@ func TestPingTimeout(t *testing.T) {
 
 	err := client.Ping()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "failed to read response")
+	// HTTP client returns "context deadline exceeded" on timeout
+	require.Contains(t, err.Error(), "context deadline exceeded")
 
 	// Should NOT be a DaemonError (it's a timeout/network error)
 	var daemonErr *ledgercore.DaemonError
@@ -378,28 +331,26 @@ func TestPingTimeout(t *testing.T) {
 }
 
 // TestSetTimeouts tests that SetTimeouts correctly configures the client.
+// Note: dialTimeout is no longer changeable after client creation since it's
+// baked into the HTTP Transport. This test only verifies queryTimeout changes.
 func TestSetTimeouts(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
 	client := NewClient(12345)
 
-	// Verify defaults
-	require.Equal(t, DefaultDialTimeout, client.dialTimeout)
+	// Verify default query timeout
 	require.Equal(t, DefaultQueryTimeout, client.queryTimeout)
 
-	// Set custom timeouts
+	// Set custom query timeout (dialTimeout parameter is ignored)
 	client.SetTimeouts(1*time.Second, 2*time.Second)
-	require.Equal(t, 1*time.Second, client.dialTimeout)
 	require.Equal(t, 2*time.Second, client.queryTimeout)
 
 	// Pass 0 to keep current value
 	client.SetTimeouts(0, 3*time.Second)
-	require.Equal(t, 1*time.Second, client.dialTimeout) // unchanged
 	require.Equal(t, 3*time.Second, client.queryTimeout)
 
 	client.SetTimeouts(4*time.Second, 0)
-	require.Equal(t, 4*time.Second, client.dialTimeout)
 	require.Equal(t, 3*time.Second, client.queryTimeout) // unchanged
 }
 
@@ -428,8 +379,8 @@ func TestWeightSuccess(t *testing.T) {
 	testSelID := makeTestSelectionID(99)
 	testRound := basics.Round(1000)
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "weight", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/weight", path)
 		require.Equal(t, testAddr.String(), req["address"])
 		require.Equal(t, hex.EncodeToString(testSelID[:]), req["selection_id"])
 		require.Equal(t, "1000", req["balance_round"])
@@ -451,8 +402,8 @@ func TestWeightZero(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "weight", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/weight", path)
 		return map[string]interface{}{
 			"weight": "0",
 		}
@@ -492,8 +443,8 @@ func TestWeightDaemonError(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "weight", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/weight", path)
 		return map[string]interface{}{
 			"error": "account not found",
 			"code":  "not_found",
@@ -760,9 +711,9 @@ func TestWeightWireFormat(t *testing.T) {
 	expectedAddrStr := addr.String() // Base32 encoded with checksum
 	expectedSelIDStr := hex.EncodeToString(selID[:])
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
 		// Verify wire format
-		require.Equal(t, "weight", req["type"])
+		require.Equal(t, "/weight", path)
 		require.Equal(t, expectedAddrStr, req["address"])
 		require.Equal(t, expectedSelIDStr, req["selection_id"])
 		require.Equal(t, "12345", req["balance_round"])
@@ -791,8 +742,8 @@ func TestTotalWeightSuccess(t *testing.T) {
 	testBalanceRound := basics.Round(1000)
 	testVoteRound := basics.Round(1001)
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "total_weight", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/total_weight", path)
 		require.Equal(t, "1000", req["balance_round"])
 		require.Equal(t, "1001", req["vote_round"])
 
@@ -813,8 +764,8 @@ func TestTotalWeightZero(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "total_weight", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/total_weight", path)
 		return map[string]interface{}{
 			"total_weight": "0",
 		}
@@ -853,8 +804,8 @@ func TestTotalWeightDaemonError(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "total_weight", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/total_weight", path)
 		return map[string]interface{}{
 			"error": "round not available",
 			"code":  "not_found",
@@ -1097,9 +1048,9 @@ func TestTotalWeightWireFormat(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
 		// Verify wire format
-		require.Equal(t, "total_weight", req["type"])
+		require.Equal(t, "/total_weight", path)
 		require.Equal(t, "12345", req["balance_round"])
 		require.Equal(t, "12346", req["vote_round"])
 
@@ -1136,8 +1087,8 @@ func TestIdentitySuccess(t *testing.T) {
 	testHash := makeTestGenesisHash()
 	testHashBase64 := base64.StdEncoding.EncodeToString(testHash[:])
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "identity", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/identity", path)
 
 		return map[string]interface{}{
 			"genesis_hash":      testHashBase64,
@@ -1161,8 +1112,8 @@ func TestIdentityDaemonError(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	server := newTestServer(t, func(req map[string]interface{}) interface{} {
-		require.Equal(t, "identity", req["type"])
+	server := newTestServerWithPath(t, func(path string, req map[string]interface{}) interface{} {
+		require.Equal(t, "/identity", path)
 		return map[string]interface{}{
 			"error": "not configured",
 			"code":  "internal",
