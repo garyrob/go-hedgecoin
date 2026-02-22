@@ -20,50 +20,50 @@ If you are blocked and need user clarification, mark the current step with `[!]`
 
 ## Workflow Steps
 
-### [ ] Step: Technical Specification
+### [x] Step: Technical Specification
 
-Assess the task's difficulty, as underestimating it leads to poor outcomes.
-- easy: Straightforward implementation, trivial bug fix or feature
-- medium: Moderate complexity, some edge cases or caveats to consider
-- hard: Complex logic, many caveats, architectural considerations, or high-risk changes
-
-Create a technical specification for the task that is appropriate for the complexity level:
-- Review the existing codebase architecture and identify reusable components.
-- Define the implementation approach based on established patterns in the project.
-- Identify all source code files that will be created or modified.
-- Define any necessary data model, API, or interface changes.
-- Describe verification steps using the project's test and lint commands.
-
-Save the output to `{@artifacts_path}/spec.md` with:
-- Technical context (language, dependencies)
-- Implementation approach
-- Source code structure changes
-- Data model / API / interface changes
-- Verification approach
-
-If the task is complex enough, create a detailed implementation plan based on `{@artifacts_path}/spec.md`:
-- Break down the work into concrete tasks (incrementable, testable milestones)
-- Each task should reference relevant contracts and include verification steps
-- Replace the Implementation step below with the planned tasks
-
-Rule of thumb for step size: each step should represent a coherent unit of work (e.g., implement a component, add an API endpoint, write tests for a module). Avoid steps that are too granular (single function).
-
-Important: unit tests must be part of each implementation task, not separate tasks. Each task should implement the code and its tests together, if relevant.
-
-Save to `{@artifacts_path}/plan.md`. If the feature is trivial and doesn't warrant this breakdown, keep the Implementation step below as is.
+Created `spec.md` with:
+- Difficulty assessment: **Medium**
+- Implementation approach using Go's `net/http` package with connection pooling
+- Files to modify: `client.go`, `client_test.go`, `daemon.py`
+- HTTP REST API design with 4 endpoints
+- Detailed implementation plan broken into 5 steps
 
 ---
 
-### [ ] Step: Implementation
+### [ ] Step: Update Go Client
 
-Implement the task according to the technical specification and general engineering best practices.
+Modify `node/weightoracle/client.go`:
+- Add `http.Client` field with connection pool configuration
+- Replace raw TCP `query()` method with HTTP POST-based `doRequest()`
+- Update all methods (Ping, Weight, TotalWeight, Identity) to use HTTP
+- Update `SetTimeouts()` for HTTP client
 
-1. Break the task into steps where possible.
-2. Implement the required changes in the codebase
-3. If relevant, write unit tests alongside each change.
-4. Run relevant tests and linters in the end of each step.
-5. Perform basic manual verification if applicable.
-6. After completion, write a report to `{@artifacts_path}/report.md` describing:
-   - What was implemented
-   - How the solution was tested
-   - The biggest issues or challenges encountered
+---
+
+### [ ] Step: Update Go Test Server
+
+Modify `node/weightoracle/client_test.go`:
+- Replace `testServer` (TCP) with `httptest.Server`
+- Replace `slowTestServer` with slow HTTP test server
+- Update all handler functions for HTTP request/response patterns
+- Run unit tests: `go test -v ./node/weightoracle/`
+
+---
+
+### [ ] Step: Update Python Daemon
+
+Modify `node/weightoracle/testdaemon/daemon.py`:
+- Replace `socket` server with `http.server.HTTPServer`
+- Create `BaseHTTPRequestHandler` subclass for routing
+- Implement POST handlers for `/ping`, `/identity`, `/weight`, `/total_weight`
+- Manual test with `curl`
+
+---
+
+### [ ] Step: Run E2E Tests and Code Quality
+
+- Build binaries: `make install`
+- Run E2E test: `go test ./test/e2e-go/features/weightoracle -run TestWeightedConsensus -v -timeout=15m`
+- Run sanity checks: `make sanity`
+- Write report to `report.md`
