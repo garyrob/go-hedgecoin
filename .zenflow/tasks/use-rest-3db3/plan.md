@@ -31,22 +31,21 @@ Created `spec.md` with:
 
 ---
 
-### [ ] Step: Update Go Client
+### [ ] Step: Update Go Client and Test Server
 
-Modify `node/weightoracle/client.go`:
+Update both together since they must match:
+
+**client.go changes:**
 - Add `http.Client` field with connection pool configuration
-- Replace raw TCP `query()` method with HTTP POST-based `doRequest()`
-- Update all methods (Ping, Weight, TotalWeight, Identity) to use HTTP
-- Update `SetTimeouts()` for HTTP client
+- Remove `Type` field from request structs (endpoint path replaces it)
+- Replace raw TCP `query()` method with HTTP POST-based `doRequest()` with proper status code handling
+- Use per-request context for dynamic timeouts
+- Update all methods (Ping, Weight, TotalWeight, Identity) with endpoint paths
 
----
-
-### [ ] Step: Update Go Test Server
-
-Modify `node/weightoracle/client_test.go`:
+**client_test.go changes:**
 - Replace `testServer` (TCP) with `httptest.Server`
 - Replace `slowTestServer` with slow HTTP test server
-- Update all handler functions for HTTP request/response patterns
+- Update handler functions to route by URL path instead of `type` field
 - Run unit tests: `go test -v ./node/weightoracle/`
 
 ---
@@ -57,6 +56,8 @@ Modify `node/weightoracle/testdaemon/daemon.py`:
 - Replace `socket` server with `http.server.HTTPServer`
 - Create `BaseHTTPRequestHandler` subclass for routing
 - Implement POST handlers for `/ping`, `/identity`, `/weight`, `/total_weight`
+- Always return JSON for errors (not HTML)
+- Use `HTTPServer.shutdown()` for graceful termination
 - Manual test with `curl`
 
 ---
