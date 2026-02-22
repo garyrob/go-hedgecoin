@@ -14,7 +14,7 @@ Upgrade the weight oracle client from raw JSON-over-TCP to HTTP REST using Go's 
 ## Technical Context
 
 ### Language & Dependencies
-- **Go**: Standard library only (`net/http`, `encoding/json`)
+- **Go**: Standard library only (`net/http`, `encoding/json`, `context`, `io`, `net`, `bytes`)
 - **Python**: Standard library only (`http.server`, `json`)
 - No new dependencies required
 
@@ -309,6 +309,15 @@ func (c *Client) doRequest(endpoint string, reqBody interface{}, result interfac
 4. **Per-request timeout via context**: Use `http.NewRequestWithContext` with timeout context for dynamic timeout control
 5. **Reuse http.Client**: Create once in constructor, reuse for all requests
 6. **Configure Transport**: Set dial timeout and idle connection limits
+
+### SetTimeouts() Behavior
+
+The `SetTimeouts()` method behavior changes slightly with HTTP:
+
+- **queryTimeout**: Can be changed dynamically; used in per-request context via `context.WithTimeout()`
+- **dialTimeout**: **Cannot be changed** after construction; it's baked into the Transport's `DialContext`. The `dialTimeout` parameter in `SetTimeouts()` should be removed or documented as having no effect after client creation.
+
+Recommended approach: Keep the `SetTimeouts()` signature for backward compatibility but only apply changes to `queryTimeout`. Add a comment noting that dial timeout is fixed at construction time.
 
 ## Python Daemon Implementation Details
 

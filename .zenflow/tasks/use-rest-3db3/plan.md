@@ -27,7 +27,7 @@ Created `spec.md` with:
 - Implementation approach using Go's `net/http` package with connection pooling
 - Files to modify: `client.go`, `client_test.go`, `daemon.py`
 - HTTP REST API design with 4 endpoints
-- Detailed implementation plan broken into 5 steps
+- See `spec.md` for detailed implementation guidance
 
 ---
 
