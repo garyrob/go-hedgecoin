@@ -31,7 +31,8 @@ Created `spec.md` with:
 
 ---
 
-### [ ] Step: Update Go Client and Test Server
+### [x] Step: Update Go Client and Test Server
+<!-- chat-id: 5ed7dc66-7cb1-4554-918f-2dab2cab13bd -->
 
 Update both together since they must match:
 
@@ -47,6 +48,8 @@ Update both together since they must match:
 - Replace `slowTestServer` with slow HTTP test server
 - Update handler functions to route by URL path instead of `type` field
 - Run unit tests: `go test -v ./node/weightoracle/`
+
+**Completed:** All changes implemented and unit tests pass (59 tests).
 
 ---
 
